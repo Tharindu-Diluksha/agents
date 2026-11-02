@@ -78,6 +78,7 @@ textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, 
 .chip.awaiting { color: var(--warn); border-color: var(--warn); }
 .chip.done { color: var(--success); border-color: var(--success); }
 .chip.failed { color: var(--danger); border-color: var(--danger); }
+.chip.paused { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 
 .panel {
   background: var(--panel);

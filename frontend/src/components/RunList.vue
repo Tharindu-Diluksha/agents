@@ -3,21 +3,13 @@ import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useRunsStore } from "../stores/runs.js";
 import LaunchRunDialog from "./LaunchRunDialog.vue";
-import type { RunState } from "../types.js";
+import { formatUsd, stateChipClass } from "../types.js";
 
 const store = useRunsStore();
 const router = useRouter();
 const showDialog = ref(false);
 
 onMounted(() => store.refresh());
-
-function stateChipClass(state: RunState): string {
-  if (state === "done") return "done";
-  if (state === "failed") return "failed";
-  if (state.startsWith("awaiting_")) return "awaiting";
-  if (state === "created") return "idle";
-  return "running";
-}
 
 function onLaunched(runId: string) {
   showDialog.value = false;
@@ -46,6 +38,7 @@ function onLaunched(runId: string) {
           <th>Source</th>
           <th>State</th>
           <th>Repos</th>
+          <th>Cost</th>
           <th>Updated</th>
         </tr>
       </thead>
@@ -61,6 +54,7 @@ function onLaunched(runId: string) {
           <td class="mono muted">
             <div v-for="repo in r.repos" :key="repo.path">{{ repo.path }}</div>
           </td>
+          <td class="muted mono">{{ formatUsd(r.totalCostUsd) }}</td>
           <td class="muted">{{ new Date(r.updatedAt).toLocaleString() }}</td>
         </tr>
       </tbody>

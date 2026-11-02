@@ -1,5 +1,23 @@
-export const ROLES = ["analyst", "developer", "reviewer", "tester", "prCreator"] as const;
+export const ROLES = [
+  "analyst",
+  "developer",
+  "unitTester",
+  "integrationTester",
+  "reviewer",
+  "e2eTester",
+  "prCreator",
+] as const;
 export type RoleId = (typeof ROLES)[number];
+
+export const ROLE_LABELS: Record<RoleId, string> = {
+  analyst: "Analyst",
+  developer: "Developer",
+  unitTester: "Unit Tester",
+  integrationTester: "Integration Tester",
+  reviewer: "Reviewer",
+  e2eTester: "E2E Tester",
+  prCreator: "PR Creator",
+};
 
 export type RunState =
   | "created"
@@ -9,13 +27,17 @@ export type RunState =
   | "developer_planning"
   | "awaiting_plan_approval"
   | "awaiting_branch_names"
+  | "unit_tests_red_running"
   | "developer_implementing"
+  | "unit_tests_green_running"
+  | "integration_tester_running"
   | "reviewer_running"
   | "awaiting_review_decision"
-  | "tester_running"
+  | "e2e_tester_running"
   | "awaiting_test_suite_approval"
   | "pr_creator_running"
   | "awaiting_pr_approval"
+  | "paused"
   | "done"
   | "failed";
 
@@ -72,16 +94,29 @@ export interface RunSummary {
   createdAt: string;
   updatedAt: string;
   pendingApproval: PendingApproval | null;
+  totalCostUsd: number;
+}
+
+export type AttemptStatus = "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
+
+export interface RoleAttempt {
+  startedAt: string;
+  endedAt?: string;
+  status: AttemptStatus;
+  state?: RunState;
+  sessionId?: string;
+  errorMessage?: string;
+  model?: string;
+  costUsd?: number;
+  numTurns?: number;
 }
 
 export interface RunDetail extends RunSummary {
-  roles: Partial<Record<RoleId, Array<{
-    startedAt: string;
-    endedAt?: string;
-    status: "running" | "done" | "awaiting_approval" | "blocked" | "failed";
-    sessionId?: string;
-    errorMessage?: string;
-  }>>>;
+  roles: Partial<Record<RoleId, RoleAttempt[]>>;
+  models?: Partial<Record<RoleId, string>>;
+  effectiveModels: Record<RoleId, string>;
+  fixIterations?: number;
+  pauseReason?: string;
   stateHistory: Array<{ at: string; from: RunState; to: RunState; reason?: string }>;
   artifacts: Array<{ owner: RoleId | "orchestrator"; name: string; relative: string }>;
   failureReason?: string;
@@ -96,6 +131,27 @@ export type RunEvent =
   | { type: "role.message"; runId: string; role: RoleId; text: string; subtype: "assistant" | "user" | "system" }
   | { type: "role.tool_call"; runId: string; role: RoleId; name: string; input: unknown; toolUseId: string }
   | { type: "role.tool_result"; runId: string; role: RoleId; toolUseId: string; isError: boolean; summary: string }
-  | { type: "role.ended"; runId: string; role: RoleId; status: "done" | "awaiting_approval" | "blocked" | "failed"; artifacts: string[] }
+  | { type: "role.ended"; runId: string; role: RoleId; status: AttemptStatus; artifacts: string[] }
   | { type: "approval.requested"; runId: string; role: RoleId; action: string; summary: string; payloadPaths: string[] }
   | { type: "approval.resolved"; runId: string; role: RoleId; action: string; decision: "approve" | "reject" | "edit" | "skip" };
+
+export interface ServerConfig {
+  roles: RoleId[];
+  models: Record<RoleId, string>;
+  maxFixIterations: number;
+  maxRunCostUsd: number;
+  reviewAutoRoute: boolean;
+}
+
+export function stateChipClass(state: RunState): string {
+  if (state === "done") return "done";
+  if (state === "failed") return "failed";
+  if (state === "paused") return "paused";
+  if (state.startsWith("awaiting_")) return "awaiting";
+  if (state === "created") return "idle";
+  return "running";
+}
+
+export function formatUsd(n: number | undefined): string {
+  return `$${(n ?? 0).toFixed(2)}`;
+}

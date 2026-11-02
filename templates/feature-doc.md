@@ -19,7 +19,10 @@
 
 ## Acceptance criteria
 
-- [ ] {{Given/When/Then or similar — one bullet per criterion. Each must be testable.}}
+Number every criterion. Downstream roles (Developer, Unit/Integration/E2E Testers, PR Creator) trace tests back to these IDs, so keep them stable across re-runs.
+
+- [ ] **AC-1** — {{Given/When/Then or similar. Each must be testable.}} _(user-facing: yes/no)_
+- [ ] **AC-2** — {{...}}
 
 ## Dependencies
 

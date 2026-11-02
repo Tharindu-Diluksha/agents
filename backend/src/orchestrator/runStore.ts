@@ -1,7 +1,15 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config.js";
 import type { RepoTarget, RoleAttempt, RoleId, RunRecord, RunSource, RunState } from "./types.js";
+
+/**
+ * Run records are cached in memory so every caller (routes, workflow, a
+ * still-running role) mutates the same object. Without the cache, an approval
+ * request loads a fresh copy from disk while a role holds an older one, and
+ * whichever saves last silently drops the other's changes.
+ */
+const cache = new Map<string, RunRecord>();
 
 function runDir(runId: string) {
   return join(paths.runsDir, runId);
@@ -16,6 +24,7 @@ export function createRun(input: {
   label: string;
   source: RunSource;
   repos: RepoTarget[];
+  models?: Partial<Record<RoleId, string>>;
 }): RunRecord {
   if (input.repos.length === 0) throw new Error("createRun requires at least one repo");
   const now = new Date().toISOString();
@@ -30,21 +39,36 @@ export function createRun(input: {
     roles: {},
     stateHistory: [],
     pendingApproval: null,
+    models: input.models,
+    fixIterations: 0,
   };
   mkdirSync(runDir(input.runId), { recursive: true });
-  writeFileSync(runFile(input.runId), JSON.stringify(record, null, 2));
+  cache.set(record.runId, record);
+  writeAtomic(runFile(input.runId), JSON.stringify(record, null, 2));
   return record;
 }
 
 export function loadRun(runId: string): RunRecord | null {
+  const cached = cache.get(runId);
+  if (cached) return cached;
   const file = runFile(runId);
   if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, "utf8")) as RunRecord;
+  const record = migrateLegacy(JSON.parse(readFileSync(file, "utf8")) as RunRecord);
+  cache.set(runId, record);
+  return record;
 }
 
 export function saveRun(record: RunRecord): void {
   record.updatedAt = new Date().toISOString();
-  writeFileSync(runFile(record.runId), JSON.stringify(record, null, 2));
+  cache.set(record.runId, record);
+  writeAtomic(runFile(record.runId), JSON.stringify(record, null, 2));
+}
+
+/** Write to a temp file and rename, so a crash mid-write never leaves a truncated run.json. */
+function writeAtomic(file: string, body: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, body);
+  renameSync(tmp, file);
 }
 
 export function listRuns(): RunRecord[] {
@@ -52,8 +76,12 @@ export function listRuns(): RunRecord[] {
   const out: RunRecord[] = [];
   for (const entry of readdirSync(paths.runsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const run = loadRun(entry.name);
-    if (run) out.push(run);
+    try {
+      const run = loadRun(entry.name);
+      if (run) out.push(run);
+    } catch {
+      // Skip unreadable run folders instead of breaking the whole list.
+    }
   }
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
@@ -68,6 +96,7 @@ export function startAttempt(record: RunRecord, role: RoleId): RoleAttempt {
   const attempt: RoleAttempt = {
     startedAt: new Date().toISOString(),
     status: "running",
+    state: record.state,
   };
   const bucket = record.roles[role] ?? [];
   bucket.push(attempt);
@@ -78,4 +107,31 @@ export function startAttempt(record: RunRecord, role: RoleId): RoleAttempt {
 export function latestAttempt(record: RunRecord, role: RoleId): RoleAttempt | undefined {
   const bucket = record.roles[role];
   return bucket && bucket.length > 0 ? bucket[bucket.length - 1] : undefined;
+}
+
+/** Sum of the SDK-reported cost of every attempt in the run. */
+export function totalCostUsd(record: RunRecord): number {
+  let total = 0;
+  for (const attempts of Object.values(record.roles)) {
+    for (const a of attempts ?? []) total += a.costUsd ?? 0;
+  }
+  return total;
+}
+
+/**
+ * Runs created before the Tester was split into Unit / Integration / E2E
+ * testers used the role id `tester` and the state `tester_running`.
+ */
+function migrateLegacy(record: RunRecord): RunRecord {
+  const roles = record.roles as Record<string, RoleAttempt[] | undefined>;
+  if (roles.tester && !roles.e2eTester) {
+    roles.e2eTester = roles.tester;
+    delete roles.tester;
+  }
+  if ((record.state as string) === "tester_running") record.state = "e2e_tester_running";
+  if (record.pendingApproval && (record.pendingApproval.role as string) === "tester") {
+    record.pendingApproval.role = "e2eTester";
+  }
+  record.fixIterations ??= 0;
+  return record;
 }

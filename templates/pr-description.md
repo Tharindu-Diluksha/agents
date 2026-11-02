@@ -9,10 +9,17 @@
 - {{bullet}}
 - {{bullet}}
 
+## Acceptance criteria → tests
+
+| AC-id | Unit | Integration | E2E |
+| ----- | ---- | ----------- | --- |
+| AC-1  | `{{foo.test.ts > ...}}` | `{{widgets.int.test.ts > ...}}` | `{{widget.spec.ts > ...}}` |
+
 ## Test plan
 
-- [ ] `npm test` in this repo — green.
-- [ ] `npx playwright test` — green.
+- [ ] Unit tests (`npm test`) — green.
+- [ ] Integration tests — green ({{note any tests skipped as env-missing}}).
+- [ ] E2E tests (`npx playwright test`) — green, or N/A.
 - [ ] {{manual verification step}}.
 
 ## Related

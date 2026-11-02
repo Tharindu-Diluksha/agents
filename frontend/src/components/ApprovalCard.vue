@@ -60,6 +60,7 @@ function approveLabel() {
 
 function rejectLabel() {
   if (isBranchApproval.value) return "Cancel run";
+  if (props.pending.action === "create_test_suite") return "Decline + skip E2E";
   return "Reject + re-run";
 }
 
@@ -112,7 +113,7 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
           <input v-model="branches.perRepo[i]!.suggestedBranch" placeholder="feature/..." />
         </div>
         <p class="muted" style="margin-top: 8px">
-          The orchestrator will <code>git checkout -b</code> (or switch to) each branch before the Developer begins implementing. Working trees must be clean.
+          The orchestrator will <code>git checkout -b</code> (or switch to) each branch before the Unit Tester writes the first failing tests. Working trees must be clean.
         </p>
       </div>
       <p v-else-if="err" class="error">{{ err }}</p>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { api } from "../api.js";
-import type { SourceType } from "../types.js";
+import { ROLE_LABELS, ROLES, type RoleId, type ServerConfig, type SourceType } from "../types.js";
 
 const emit = defineEmits<{
   (e: "launched", runId: string): void;
@@ -27,6 +27,18 @@ const manualCriteria = ref<string[]>([""]);
 const repos = ref<RepoRow[]>([{ path: "", baseBranch: "master", aiGuidelinePath: "" }]);
 const submitting = ref(false);
 const error = ref<string | null>(null);
+
+// Per-role model overrides. Blank = server default (CLAUDE_MODEL / CLAUDE_MODEL_<ROLE>).
+const serverConfig = ref<ServerConfig | null>(null);
+const showModels = ref(false);
+const models = ref<Record<RoleId, string>>(Object.fromEntries(ROLES.map((r) => [r, ""])) as Record<RoleId, string>);
+onMounted(async () => {
+  try {
+    serverConfig.value = await api.getConfig();
+  } catch {
+    // Defaults are only used as placeholders; the dialog still works without them.
+  }
+});
 
 function addRepo() {
   repos.value.push({ path: "", baseBranch: "master", aiGuidelinePath: "" });
@@ -79,7 +91,13 @@ async function submit() {
       return;
     }
 
-    const { runId } = await api.launchRun({ source, repos: payloadRepos });
+    const modelOverrides = Object.fromEntries(
+      Object.entries(models.value)
+        .map(([role, m]) => [role, m.trim()])
+        .filter(([, m]) => m.length > 0),
+    ) as Partial<Record<RoleId, string>>;
+
+    const { runId } = await api.launchRun({ source, repos: payloadRepos, models: modelOverrides });
     emit("launched", runId);
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
@@ -93,7 +111,7 @@ async function submit() {
   <div class="backdrop" @click.self="emit('close')">
     <div class="dialog panel">
       <h3>Launch a new run</h3>
-      <p class="muted">Analyst runs immediately. The orchestrator will prompt in the UI before every mutating action downstream.</p>
+      <p class="muted">Analyst runs immediately. Pipeline: Analyst → Developer (plan) → Unit Tester (failing tests) → Developer (implement) → Unit Tester (verify) → Integration Tester → Reviewer → E2E Tester → PR Creator. The orchestrator asks in the UI before every mutating action.</p>
 
       <div class="tabs">
         <button :class="{ primary: mode === 'jira' }" @click="mode = 'jira'">From JIRA ticket</button>
@@ -158,6 +176,24 @@ async function submit() {
         </div>
       </div>
 
+      <div class="models">
+        <div class="row">
+          <label style="margin:0">Models per role</label>
+          <div class="spacer" />
+          <button @click="showModels = !showModels">{{ showModels ? "Hide" : "Customize" }}</button>
+        </div>
+        <p v-if="!showModels" class="muted" style="font-size: 12px; margin: 4px 0 0">
+          Using server defaults<template v-if="serverConfig">
+            (e.g. Developer: <span class="mono">{{ serverConfig.models.developer }}</span>)</template>.
+        </p>
+        <div v-else class="model-grid">
+          <template v-for="r in ROLES" :key="r">
+            <span class="muted" style="font-size: 12px">{{ ROLE_LABELS[r] }}</span>
+            <input v-model="models[r]" :placeholder="serverConfig?.models[r] ?? 'server default'" class="mono" />
+          </template>
+        </div>
+      </div>
+
       <p v-if="error" class="error">{{ error }}</p>
 
       <div class="row" style="margin-top: 12px">
@@ -181,5 +217,7 @@ label { font-size: 12px; color: var(--muted); margin-top: 8px; display: block; }
 .repos { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .repo-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
 .split { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+.models { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
+.model-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: center; margin-top: 8px; }
 @media (max-width: 640px) { .split { grid-template-columns: 1fr; } }
 </style>

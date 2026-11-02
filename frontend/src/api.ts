@@ -1,4 +1,4 @@
-import type { RepoTarget, RoleId, RunDetail, RunSource, RunSummary } from "./types.js";
+import type { RoleId, RunDetail, RunSource, RunSummary, ServerConfig } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -15,7 +15,14 @@ export const api = {
   async getRun(id: string): Promise<RunDetail> {
     return json(await fetch(`/api/runs/${id}`));
   },
-  async launchRun(input: { source: RunSource; repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string }> }): Promise<{ runId: string }> {
+  async getConfig(): Promise<ServerConfig> {
+    return json(await fetch("/api/config"));
+  },
+  async launchRun(input: {
+    source: RunSource;
+    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string }>;
+    models?: Partial<Record<RoleId, string>>;
+  }): Promise<{ runId: string }> {
     return json(
       await fetch("/api/runs", {
         method: "POST",

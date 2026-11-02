@@ -10,5 +10,5 @@ import type { RoleId } from "./types.js";
 export async function runRoleResume(runId: string, role: RoleId): Promise<void> {
   const record = loadRun(runId);
   if (!record) return;
-  await runRoleViaWorkflow(record, role, "orchestrator_restart");
+  await runRoleViaWorkflow(record, role, { signal: "orchestrator_restart" });
 }

@@ -1,17 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { paths } from "../config.js";
-import type { RepoTarget, RoleId, RunRecord } from "./types.js";
+import { ROLES, type RepoTarget, type RoleId, type RunRecord } from "./types.js";
 
 /**
  * Layout per run:
  *   runs/<runId>/
  *     run.json                       ← state metadata (not an artifact)
- *     analyst/<file>.md
- *     developer/<file>.md
- *     reviewer/<file>.md
- *     tester/<file>.md
- *     prCreator/<file>.md
+ *     <roleId>/<file>.md             ← one folder per role (analyst, developer, unitTester, …)
  *     orchestrator/<file>            ← orchestrator-generated, e.g. proposed-branches.json
  *
  * Role attribution for the UI comes from the subfolder name — no central
@@ -53,14 +49,10 @@ export function toRelative(absPath: string): string {
 
 export type ArtifactOwner = RoleId | "orchestrator";
 
-const KNOWN_OWNERS: Set<ArtifactOwner> = new Set([
-  "analyst",
-  "developer",
-  "reviewer",
-  "tester",
-  "prCreator",
-  "orchestrator",
-]);
+const KNOWN_OWNERS: Set<ArtifactOwner> = new Set<ArtifactOwner>([...ROLES, "orchestrator"]);
+
+/** Folder names from before the Tester role was split; shown under the new owner. */
+const LEGACY_OWNERS: Record<string, ArtifactOwner> = { tester: "e2eTester" };
 
 export function repoSlug(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -85,8 +77,8 @@ export function listArtifactsForRun(record: RunRecord): ListedArtifact[] {
   for (const entry of readdirSync(base, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const name = entry.name;
-    if (!KNOWN_OWNERS.has(name as ArtifactOwner)) continue;
-    const owner = name as ArtifactOwner;
+    const owner = KNOWN_OWNERS.has(name as ArtifactOwner) ? (name as ArtifactOwner) : LEGACY_OWNERS[name];
+    if (!owner) continue;
     const sub = join(base, name);
     for (const f of readdirSync(sub, { withFileTypes: true })) {
       if (!f.isFile()) continue;

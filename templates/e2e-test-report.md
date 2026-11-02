@@ -1,7 +1,7 @@
-# Test report
+# E2E test report
 
 - **Ticket**: {{PROJ-123}}
-- **Tester**: Tester role
+- **Tester**: E2E Tester role
 - **Suite**: Playwright
 - **Config**: `{{playwright.config.ts}}`
 - **Run at**: {{timestamp}}
@@ -14,15 +14,15 @@
 
 ## Test cases
 
-| # | Name | Acceptance criterion | Result | Duration | Notes |
+| # | Name | AC-id | Result | Duration | Notes |
 | - | ---- | -------------------- | ------ | -------- | ----- |
-| 1 | {{name}} | {{AC bullet}} | pass / fail | {{ms}} | {{...}} |
+| 1 | {{name}} | AC-1 | pass / fail | {{ms}} | {{...}} |
 
 ## Failures (if any)
 
 ### Failure 1 — {{test name}}
 
-- **Classification**: test-bug | app-bug
+- **Classification**: test-bug | flaky | app-bug
 - **Expected**: {{...}}
 - **Actual**: {{...}}
 - **Repro**: {{steps}}
