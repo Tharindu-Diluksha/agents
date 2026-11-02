@@ -1,0 +1,17 @@
+{
+  "name": "agent-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generic multi-agent Claude orchestrator (Analyst / Developer / Reviewer / Tester / PR Creator) with a Vue UI. Target repo and standards doc are configured per run.",
+  "scripts": {
+    "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install",
+    "dev": "concurrently -n backend,frontend -c blue,magenta \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "start": "npm --prefix backend run start",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "test": "npm --prefix backend run test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

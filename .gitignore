@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.env
+.env.local
+
+# Runtime state (role artifacts and session ids)
+runs/
+sessions/
+
+# Logs
+*.log
+logs/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
