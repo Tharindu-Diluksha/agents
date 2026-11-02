@@ -58,13 +58,17 @@ export interface PendingApproval {
 }
 
 export interface ProposedBranches {
-  perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string }>;
+  perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string; note?: string }>;
 }
 
 export interface RepoTarget {
   path: string;
   baseBranch: string;
   aiGuidelinePath: string | null;
+  /** This run's git worktree for the repo, once created. */
+  workPath?: string | null;
+  branch?: string | null;
+  baseRef?: string | null;
 }
 
 export type SourceType = "feature" | "change" | "fix";
@@ -105,7 +109,7 @@ export interface AttemptUsage {
   cacheCreationInputTokens: number;
 }
 
-export type AttemptStatus = "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
+export type AttemptStatus = "queued" | "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
 
 export interface RoleAttempt {
   startedAt: string;
@@ -121,6 +125,7 @@ export interface RoleAttempt {
 }
 
 export interface RunDetail extends RunSummary {
+  workspace?: "worktree" | "in-place";
   roles: Partial<Record<RoleId, RoleAttempt[]>>;
   models?: Partial<Record<RoleId, string>>;
   effectiveModels: Record<RoleId, string>;
@@ -137,6 +142,7 @@ export type RunEvent =
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }
   | { type: "role.started"; runId: string; role: RoleId; attempt: number }
+  | { type: "role.queued"; runId: string; role: RoleId; position: number }
   | { type: "role.message"; runId: string; role: RoleId; text: string; subtype: "assistant" | "user" | "system" }
   | { type: "role.tool_call"; runId: string; role: RoleId; name: string; input: unknown; toolUseId: string }
   | { type: "role.tool_result"; runId: string; role: RoleId; toolUseId: string; isError: boolean; summary: string }
@@ -172,6 +178,14 @@ export interface ServerConfig {
   maxRunCostUsd: number;
   reviewAutoRoute: boolean;
   jira: JiraMcpSummary;
+  maxConcurrentRoles: number;
+  worktreesDir: string;
+}
+
+export interface Slots {
+  limit: number;
+  running: number;
+  queued: number;
 }
 
 export function stateChipClass(state: RunState): string {

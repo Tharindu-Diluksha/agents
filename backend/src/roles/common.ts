@@ -8,6 +8,7 @@ import {
 } from "../orchestrator/artifacts.js";
 import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
 import type { RoleInputCtx } from "./types.js";
+import { workDir } from "../orchestrator/workspaces.js";
 
 export function artifactPath(record: RunRecord, role: ArtifactOwner, name: string): string {
   return perRoleArtifactPath(record, role, name);
@@ -27,7 +28,14 @@ export function headerFor(record: RunRecord, roleHuman: string): string {
   ];
   for (const r of record.repos) {
     const guideline = r.aiGuidelinePath ? ` · ai-guideline: \`${r.aiGuidelinePath}\`` : "";
-    lines.push(`  - \`${r.path}\` (base: \`${r.baseBranch}\`${guideline})`);
+    const branch = r.branch ? ` · branch: \`${r.branch}\`` : "";
+    lines.push(`  - \`${workDir(r)}\` (base: \`${r.baseBranch}\`${branch}${guideline})`);
+  }
+  if (record.repos.some((r) => r.workPath)) {
+    lines.push(
+      "",
+      "Each path above is **this run's own git worktree** of the repo. Work only there — other runs may be using the original checkout or their own worktrees in parallel.",
+    );
   }
   if (record.repos.length > 1) {
     lines.push("");
@@ -67,8 +75,8 @@ export function maybeAttach(record: RunRecord, role: ArtifactOwner, name: string
 export function aiGuidelineSection(record: RunRecord, role: RoleId): string {
   const resolved = record.repos
     .map((r) =>
-      r.aiGuidelinePath && existsSync(join(r.path, r.aiGuidelinePath))
-        ? { path: r.path, guideline: r.aiGuidelinePath }
+      r.aiGuidelinePath && existsSync(join(workDir(r), r.aiGuidelinePath))
+        ? { path: workDir(r), guideline: r.aiGuidelinePath }
         : null,
     )
     .filter((x): x is { path: string; guideline: string } => x !== null);

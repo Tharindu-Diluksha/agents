@@ -98,7 +98,7 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
       <div class="spacer" />
       <span class="muted">{{ new Date(pending.requestedAt).toLocaleTimeString() }}</span>
     </div>
-    <p>{{ pending.summary }}</p>
+    <p style="white-space: pre-wrap">{{ pending.summary }}</p>
 
     <!-- Branch names: per-repo editable rows -->
     <div v-if="isBranchApproval">
@@ -111,9 +111,10 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
           </div>
           <label>New branch</label>
           <input v-model="branches.perRepo[i]!.suggestedBranch" placeholder="feature/..." />
+          <p v-if="r.note" class="muted" style="font-size: 12px; margin: 4px 0 0">{{ r.note }}</p>
         </div>
         <p class="muted" style="margin-top: 8px">
-          The orchestrator will <code>git checkout -b</code> (or switch to) each branch before the Unit Tester writes the first failing tests. Working trees must be clean.
+          The orchestrator switches this run's own worktree of each repo to the branch (your checkout is not touched) before the Unit Tester writes the first failing tests.
         </p>
       </div>
       <p v-else-if="err" class="error">{{ err }}</p>

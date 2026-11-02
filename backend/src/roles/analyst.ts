@@ -13,6 +13,7 @@ export const analyst: RoleSpec = {
   jiraAccess: "read",
   bashAllowList: [],
   writeScope: "run",
+  needsWorkspace: false,
   maxTurns: 30,
   cwdFor(record) {
     return ensureRoleDir(record.runId, "analyst");

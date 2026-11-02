@@ -27,6 +27,8 @@ export const paths = {
   templatesDir: resolve(here, "..", "..", "templates"),
   runsDir: resolve(here, "..", "..", "runs"),
   sessionsDir: resolve(here, "..", "..", "sessions"),
+  /** Per-run git worktrees: <worktreesDir>/<runId>/<repoSlug>. */
+  worktreesDir: process.env.WORKTREES_DIR ? resolve(process.env.WORKTREES_DIR) : resolve(here, "..", "..", "worktrees"),
   frontendDist: resolve(here, "..", "..", "frontend", "dist"),
 } as const;
 
@@ -61,6 +63,19 @@ export const config = {
   retry: {
     maxAttempts: num("RUN_RETRY_MAX_ATTEMPTS", 3),
     initialDelayMs: num("RUN_RETRY_INITIAL_DELAY_MS", 1000),
+  },
+  /** Role sessions allowed to run at once across all runs. 0 = unlimited. */
+  maxConcurrentRoles: num("MAX_CONCURRENT_ROLES", 2),
+  worktree: {
+    /** `git fetch origin <base>` before creating a worktree, so it starts from the latest base. */
+    fetchBase: (process.env.WORKTREE_FETCH_BASE ?? "true").toLowerCase() !== "false",
+    /** Install dependencies (npm ci / pnpm / yarn, by lockfile) in each new worktree. */
+    installDeps: (process.env.WORKTREE_INSTALL_DEPS ?? "true").toLowerCase() !== "false",
+    /** Untracked files to copy from the original checkout into each worktree (e.g. `.env.test`). */
+    copyFiles: (process.env.WORKTREE_COPY_FILES ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   branchNameTemplate: process.env.BRANCH_NAME_TEMPLATE ?? "feature/{ticket}-{slug}",
 } as const;

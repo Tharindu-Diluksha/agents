@@ -1,5 +1,6 @@
 import { perRepoPrDescriptionName } from "../orchestrator/artifacts.js";
 import type { RoleSpec } from "./types.js";
+import { diffBase, workDir } from "../orchestrator/workspaces.js";
 import { aiGuidelineSection, artifactRelative, BASH, headerFor, maybeAttach, orchestratorSection, primaryRepo } from "./common.js";
 
 export const prCreator: RoleSpec = {
@@ -16,9 +17,10 @@ export const prCreator: RoleSpec = {
     BASH.ls,
   ],
   writeScope: "run",
+  needsWorkspace: true,
   maxTurns: 40,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const perRepoPaths = record.repos.map((r) => ({
@@ -36,18 +38,18 @@ export const prCreator: RoleSpec = {
       "",
       "For each repo:",
       "",
-      "1. Prefix shell commands with `cd <absolutePath> && ` so the Bash allowlist resolves them to that repo. Example: `cd \"" + record.repos[0]!.path + "\" && git status`.",
+      "1. Prefix shell commands with `cd <absolutePath> && ` so the Bash allowlist resolves them to that repo. Example: `cd \"" + workDir(record.repos[0]!) + "\" && git status`.",
       "2. Make sure the working tree is clean (`git status`). If dirty, emit `status: \"blocked\"` describing the uncommitted changes.",
       "3. Confirm the current branch isn't the base branch. If it is, emit `status: \"blocked\"` — the Developer should have been on a feature branch.",
       "4. Push the branch to `origin`.",
-      "5. Compute the diff against the repo's base branch (`git diff <base>...HEAD`, `git log <base>..HEAD`).",
+      "5. Compute the diff against the ref listed for that repo below (`git diff <ref>...HEAD`, `git log <ref>..HEAD`).",
       "6. If `.github/pull_request_template.md` exists in that repo, honour its section headings. Otherwise use the shape in `templates/pr-description.md`.",
       "   Include a **traceability table**: one row per acceptance criterion (AC-id) listing the unit, integration and E2E tests that cover it, taken from the test reports below.",
       "7. Write the PR description to the per-repo file listed below.",
       "",
       "## Per-repo PR description files to write",
       "",
-      ...perRepoPaths.map((p) => `- \`${p.file}\` ← for repo \`${p.repo.path}\` (base: \`${p.repo.baseBranch}\`)`),
+      ...perRepoPaths.map((p) => `- \`${p.file}\` ← for repo \`${workDir(p.repo)}\` (PR base: \`${p.repo.baseBranch}\`; diff against \`${diffBase(p.repo)}\`)`),
       "",
       "After all files are written, emit a single `approvalRequest.action: \"create_pr\"` with `payloadPaths` containing every per-repo file. The orchestrator (not you) will run `gh pr create` once per repo after the user approves.",
       "",

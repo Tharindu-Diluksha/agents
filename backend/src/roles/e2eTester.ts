@@ -11,6 +11,7 @@ import {
   TRACEABILITY_NOTE,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
+import { workDir } from "../orchestrator/workspaces.js";
 
 /** True once the user approved scaffolding a Playwright suite for this run. */
 export function suiteCreationApproved(record: RunRecord): boolean {
@@ -41,9 +42,10 @@ export const e2eTester: RoleSpec = {
     return suiteCreationApproved(record) ? [/^(npm|pnpm)\s+(install|i|add)(\s|$)/] : [];
   },
   writeScope: "repos-and-run",
+  needsWorkspace: true,
   maxTurns: 100,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const reportPath = artifactRelative(record, "e2eTester", "e2e-test-report.md");

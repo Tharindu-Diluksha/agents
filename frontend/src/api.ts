@@ -1,4 +1,4 @@
-import type { JiraMcpTestResult, RoleId, RunDetail, RunSource, RunSummary, ServerConfig } from "./types.js";
+import type { JiraMcpTestResult, RoleId, RunDetail, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -17,6 +17,18 @@ export const api = {
   },
   async getConfig(): Promise<ServerConfig> {
     return json(await fetch("/api/config"));
+  },
+  async getSlots(): Promise<Slots> {
+    return json(await fetch("/api/slots"));
+  },
+  async removeWorkspaces(id: string, force: boolean): Promise<{ results: Array<{ repoPath: string; workPath: string; removed: boolean; error?: string }> }> {
+    return json(
+      await fetch(`/api/runs/${id}/workspaces/remove`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force }),
+      }),
+    );
   },
   async testJira(): Promise<JiraMcpTestResult> {
     return json(await fetch("/api/jira/test", { method: "POST" }));

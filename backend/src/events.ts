@@ -6,6 +6,8 @@ export type RunEvent =
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }
   | { type: "role.started"; runId: string; role: RoleId; attempt: number }
+  /** Waiting for a concurrency slot; `position` is 1-based in the global queue. */
+  | { type: "role.queued"; runId: string; role: RoleId; position: number }
   | { type: "role.message"; runId: string; role: RoleId; text: string; subtype: "assistant" | "user" | "system" }
   | { type: "role.tool_call"; runId: string; role: RoleId; name: string; input: unknown; toolUseId: string }
   | { type: "role.tool_result"; runId: string; role: RoleId; toolUseId: string; isError: boolean; summary: string }

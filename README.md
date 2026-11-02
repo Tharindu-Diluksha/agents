@@ -32,6 +32,20 @@ Each role can run on its own model:
 - `CLAUDE_MODEL_<ROLE>` — per-role default (`ANALYST`, `DEVELOPER`, `UNIT_TESTER`, `INTEGRATION_TESTER`, `REVIEWER`, `E2E_TESTER`, `PR_CREATOR`).
 - Launch dialog → "Models per role" — overrides for a single run.
 
+## Running several features in parallel
+
+You can launch several runs at once, including on the same repo:
+
+- **Isolated worktrees.** Each run gets its own git worktree of every target repo under `worktrees/<runId>/<repo>`. It's created when the Developer first starts: detached at the latest `origin/<base>`, with dependencies installed (`npm ci`, pnpm or yarn, by lockfile) and any `WORKTREE_COPY_FILES` (e.g. `.env.test`) copied in. At the branch gate that worktree switches to the approved branch. Your own checkout is never switched or modified.
+- **Branch names never collide.** Proposals always come from `BRANCH_NAME_TEMPLATE`. If that name is already checked out in another worktree (another run, or your checkout), a run-specific suffix is suggested. If you force a taken name, the gate stays open with an explanation.
+- **Shared session limit.** At most `MAX_CONCURRENT_ROLES` (default 2) role sessions run at once across all runs; others show as **queued** and start first come, first served. Installing dependencies doesn't take a slot. The run list shows slot usage.
+- **Cleanup.** "Remove worktrees" on a finished, failed or paused run deletes its worktrees and keeps the branches. Uncommitted changes need a confirmation. If the run continues later, the worktree is re-created on its branch.
+- **One backend per state folder.** The backend takes a lock (`runs/.orchestrator.lock`) at startup and refuses to start if another live backend holds it.
+
+Runs created before this change keep working directly in the checkout.
+
+Run state stays in plain files (`runs/<runId>/run.json`): each run has its own file and a single backend process writes it, so no database is needed.
+
 ## Token usage
 
 The run page has a **Token usage** table: per role, the model, number of attempts, input, output, cache-read and cache-write tokens, total tokens and cost, plus a run total. A running role's numbers update live. The role tabs and the run list show token and cost totals too.

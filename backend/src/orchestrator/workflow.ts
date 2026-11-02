@@ -11,9 +11,10 @@ import type { RoleInputCtx, RoleSpec } from "../roles/types.js";
 import { jiraToolsFor, loadJiraMcpConfig, mcpServersOption } from "../external/jiraMcpConfig.js";
 import { postJiraComment } from "../external/jiraMcp.js";
 import { createPr } from "../external/gh.js";
-import { checkoutOrCreateBranch } from "../external/git.js";
 import { clearApproval, requestApproval } from "./approvals.js";
 import { artifactPath, perRepoPrDescriptionName, readArtifact, runDir, toRelative } from "./artifacts.js";
+import { Semaphore } from "./concurrency.js";
+import { prepareWorkspaces, removeWorkspaces, setFeatureBranch, workDir, type RemoveResult } from "./workspaces.js";
 import { proposeBranches, readProposedBranches, writeProposedBranches, type BranchProposal } from "./branches.js";
 import { latestAttempt, loadRun, saveRun, startAttempt, totalCostUsd, transition } from "./runStore.js";
 import type { ApprovalAction, PendingApproval, RoleAttempt, RoleId, RoleOutput, RunRecord, RunState } from "./types.js";
@@ -106,6 +107,26 @@ export function abortRun(runId: string): void {
   if (!record || record.state === "done" || record.state === "failed" || record.state === "paused") return;
   clearApproval(record);
   pause(record, "aborted by user");
+}
+
+/**
+ * Removes the run's worktrees (the branches stay). Only for finished, failed
+ * or paused runs; if the run is resumed later, the worktree is re-created on
+ * its branch. Without `force`, a worktree with uncommitted changes is kept and
+ * reported.
+ */
+export async function removeRunWorkspaces(runId: string, force: boolean): Promise<RemoveResult[]> {
+  const record = mustLoad(runId);
+  if (inFlight.has(runId)) throw new Error("a role is still running in this run; abort it first");
+  if (!["done", "failed", "paused"].includes(record.state)) {
+    throw new Error(`worktrees can only be removed when the run is done, failed or paused (state: ${record.state})`);
+  }
+  const results = await removeWorkspaces(record, force);
+  saveRun(record);
+  for (const r of results) {
+    log.info("workflow.worktree_removed", { runId, repo: r.repoPath, workPath: r.workPath, removed: r.removed, err: r.error });
+  }
+  return results;
 }
 
 /** Re-entry used by startup recovery: re-issues the role for the current state. */
@@ -358,10 +379,21 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
       return;
     }
 
+    // Worktrees normally exist since Developer planning; re-create them if they were removed.
+    try {
+      await prepareWorkspaces(record, (m) => systemMessage(record, "developer", m));
+      saveRun(record);
+    } catch (err) {
+      fail(record, `could not prepare workspaces: ${errMsg(err)}`);
+      return;
+    }
+
     const results: Array<{ repoPath: string; branch: string; outcome?: string; error?: string }> = [];
     for (const p of proposals) {
+      const repo = record.repos.find((r) => r.path === p.repoPath);
+      if (!repo) continue;
       try {
-        const outcome = await checkoutOrCreateBranch(p.repoPath, p.suggestedBranch, p.baseBranch);
+        const outcome = await setFeatureBranch(record, repo, p.suggestedBranch);
         log.info("workflow.branch_ready", { runId: record.runId, repo: p.repoPath, branch: p.suggestedBranch, outcome });
         results.push({ repoPath: p.repoPath, branch: p.suggestedBranch, outcome });
       } catch (err) {
@@ -370,13 +402,19 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
         results.push({ repoPath: p.repoPath, branch: p.suggestedBranch, error: msg });
       }
     }
+    saveRun(record);
 
     if (results.some((r) => r.error)) {
-      fail(
+      // Keep the gate open with the user's names so they can pick others and retry.
+      const payload = writeProposedBranches(record.runId, proposals);
+      reopenGate(
         record,
-        results
-          .map((r) => (r.error ? `${r.repoPath} (${r.branch}): FAILED — ${r.error}` : `${r.repoPath}: ${r.branch} ${r.outcome}`))
-          .join("\n"),
+        "developer",
+        "approve_branch_names",
+        `Branch setup failed — edit the names and approve again:\n${results
+          .map((r) => (r.error ? `${r.repoPath} (${r.branch}): ${r.error}` : `${r.repoPath}: ${r.branch} ${r.outcome}`))
+          .join("\n")}`,
+        [payload],
       );
       return;
     }
@@ -450,7 +488,7 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
         continue;
       }
       try {
-        const url = await createPr({ repoPath: repo.path, baseBranch: repo.baseBranch, body, titleHint: record.label });
+        const url = await createPr({ repoPath: workDir(repo), baseBranch: repo.baseBranch, body, titleHint: record.label });
         log.info("workflow.pr_created", { runId: record.runId, repo: repo.path, url });
         results.push({ repoPath: repo.path, url });
       } catch (err) {
@@ -523,11 +561,29 @@ async function runRoleAsync(
   const model = record.models?.[role] || config.models[role];
   const attempt = startAttempt(record, role);
   attempt.model = model;
+  attempt.status = "queued";
   const attemptNumber = record.roles[role]?.length ?? 1;
   saveRun(record);
-  emit({ type: "role.started", runId, role, attempt: attemptNumber });
 
+  let release: (() => void) | null = null;
   try {
+    // 1. Isolated worktree(s) for this run — before taking a slot, since
+    //    installing dependencies doesn't use the model.
+    if (spec.needsWorkspace) {
+      await prepareWorkspaces(record, (m) => systemMessage(record, role, m));
+      saveRun(record);
+    }
+
+    // 2. Global concurrency limit across runs.
+    release = await roleSlots.acquire(ctrl.signal, (position) => {
+      emit({ type: "role.queued", runId, role, position });
+      systemMessage(record, role, `waiting for a free slot (${position} in queue; MAX_CONCURRENT_ROLES=${config.maxConcurrentRoles})`);
+    });
+    if (ctrl.signal.aborted) throw new Error("aborted");
+    attempt.status = "running";
+    saveRun(record);
+    emit({ type: "role.started", runId, role, attempt: attemptNumber });
+
     const outcome = await runRoleAgent({
       runId,
       role,
@@ -536,7 +592,7 @@ async function runRoleAsync(
       userPrompt: spec.buildInput(record, ctx),
       cwd: spec.cwdFor(record),
       model,
-      repoPaths: record.repos.map((r) => r.path),
+      repoPaths: record.repos.map(workDir),
       writeRoots: writeRootsFor(record, spec.writeScope),
       bashAllowList: [...spec.bashAllowList, ...(spec.extraBashAllowList?.(record) ?? [])],
       extraTools: jira.tools,
@@ -545,6 +601,8 @@ async function runRoleAsync(
       signal: ctrl.signal,
     });
 
+    // Free the slot before routing, so queued roles of other runs go first.
+    release();
     attempt.sessionId = outcome.sessionId;
     attempt.endedAt = new Date().toISOString();
     if (outcome.metrics) {
@@ -586,8 +644,16 @@ async function runRoleAsync(
     emit({ type: "role.ended", runId, role, status: "failed", artifacts: [] });
     fail(record, `${spec.title}: ${msg}`);
   } finally {
+    release?.();
     if (inFlight.get(runId) === ctrl) inFlight.delete(runId);
   }
+}
+
+/** Shared across all runs; the limit is re-read on every acquire. */
+export const roleSlots = new Semaphore(() => config.maxConcurrentRoles);
+
+function systemMessage(record: RunRecord, role: RoleId, text: string): void {
+  emit({ type: "role.message", runId: record.runId, role, subtype: "system", text: `[orchestrator] ${text}` });
 }
 
 /**
@@ -618,7 +684,7 @@ export function jiraToolsForRun(record: RunRecord, spec: RoleSpec): { tools: str
 
 export function writeRootsFor(record: RunRecord, scope: "run" | "repos-and-run"): string[] {
   const run = runDir(record.runId);
-  return scope === "run" ? [run] : [run, ...record.repos.map((r) => r.path)];
+  return scope === "run" ? [run] : [run, ...record.repos.map(workDir)];
 }
 
 async function handleRoleOutput(record: RunRecord, role: RoleId, output: RoleOutput): Promise<void> {

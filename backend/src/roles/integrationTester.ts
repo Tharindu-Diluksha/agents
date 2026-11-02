@@ -10,6 +10,7 @@ import {
   TRACEABILITY_NOTE,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
+import { workDir } from "../orchestrator/workspaces.js";
 
 export const integrationTester: RoleSpec = {
   id: "integrationTester",
@@ -26,9 +27,10 @@ export const integrationTester: RoleSpec = {
     BASH.ls,
   ],
   writeScope: "repos-and-run",
+  needsWorkspace: true,
   maxTurns: 80,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const reportPath = artifactRelative(record, "integrationTester", "integration-test-report.md");

@@ -48,6 +48,7 @@ useRunSocket(props.id, (ev) => {
     liveUsage.value = { ...liveUsage.value, [ev.role]: { usage: ev.usage, costUsd: ev.costUsd } };
     return;
   }
+  if (ev.type === "role.queued" || ev.type === "role.started") refresh();
   if (ev.type === "role.started" || ev.type === "role.ended") {
     const { [ev.role]: _drop, ...rest } = liveUsage.value;
     liveUsage.value = rest;
@@ -64,6 +65,7 @@ function roleChip(role: RoleId): { label: string; cls: string } {
   const last = attempts[attempts.length - 1];
   if (!last) return { label: "idle", cls: "idle" };
   if (last.status === "running") return { label: "running", cls: "running" };
+  if (last.status === "queued") return { label: "queued", cls: "awaiting" };
   if (last.status === "awaiting_approval") return { label: "awaiting approval", cls: "awaiting" };
   if (last.status === "done") return { label: "done", cls: "done" };
   if (last.status === "failed") return { label: "failed", cls: "failed" };
@@ -131,6 +133,28 @@ watch(artifactsForRole, (a) => {
 async function skip() { await api.skip(props.id); await refresh(); }
 async function jump(to: RoleId) { await api.jump(props.id, to); activeRole.value = to; await refresh(); }
 async function abort() { await api.abort(props.id); await refresh(); }
+
+const hasWorktrees = computed(() => detail.value?.repos.some((r) => r.workPath) ?? false);
+const canRemoveWorktrees = computed(() => hasWorktrees.value && ["done", "failed", "paused"].includes(detail.value?.state ?? ""));
+const worktreeMsg = ref<string | null>(null);
+async function removeWorktrees() {
+  worktreeMsg.value = null;
+  try {
+    let { results } = await api.removeWorkspaces(props.id, false);
+    const dirty = results.filter((r) => !r.removed);
+    if (dirty.length > 0) {
+      const detailText = dirty.map((r) => `${r.workPath}: ${r.error}`).join("\n");
+      if (window.confirm(`Some worktrees could not be removed (uncommitted changes?):\n\n${detailText}\n\nDiscard those changes and remove anyway?`)) {
+        ({ results } = await api.removeWorkspaces(props.id, true));
+      }
+    }
+    const failed = results.filter((r) => !r.removed);
+    worktreeMsg.value = failed.length ? `Not removed: ${failed.map((r) => r.workPath).join(", ")}` : "Worktrees removed. Branches are kept.";
+  } catch (e) {
+    worktreeMsg.value = e instanceof Error ? e.message : String(e);
+  }
+  await refresh();
+}
 </script>
 
 <template>
@@ -160,16 +184,20 @@ async function abort() { await api.abort(props.id); await refresh(); }
       </div>
       <div class="muted mono" style="margin-top: 4px">
         <div v-for="repo in detail.repos" :key="repo.path">
-          {{ repo.path }} (base: {{ repo.baseBranch }}<span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
+          {{ repo.path }} (base: {{ repo.baseBranch }}<span v-if="repo.branch">, branch: {{ repo.branch }}</span><span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
+          <div v-if="repo.workPath" style="font-size: 11px">↳ worktree: {{ repo.workPath }}</div>
         </div>
+        <div v-if="detail.workspace === 'in-place'" style="font-size: 11px">This run predates per-run worktrees and works in the checkout directly.</div>
       </div>
       <div v-if="detail.state === 'failed' && detail.failureReason" class="error" style="margin-top: 8px; white-space: pre-wrap">Failure: {{ detail.failureReason }}</div>
+      <div v-if="worktreeMsg" class="muted" style="margin-top: 8px; font-size: 12px">{{ worktreeMsg }}</div>
       <div v-if="detail.state === 'paused' && detail.pauseReason" class="paused-note">
         Paused: {{ detail.pauseReason }}
       </div>
       <div class="row" style="margin-top: 12px; gap: 6px; flex-wrap: wrap">
         <button v-for="r in ROLES" :key="r" @click="jump(r)">Jump → {{ ROLE_LABELS[r] }}</button>
         <div class="spacer" />
+        <button v-if="hasWorktrees" @click="removeWorktrees" :disabled="!canRemoveWorktrees" title="Available when the run is done, failed or paused. Branches are kept.">Remove worktrees</button>
         <button class="warn" @click="skip" :disabled="!detail.pendingApproval">Skip gate</button>
         <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused' || detail.state === 'failed'">Abort</button>
       </div>

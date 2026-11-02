@@ -18,6 +18,8 @@ export interface RoleSpec {
   /** Extra Bash patterns that depend on run state (e.g. installs after an approval). */
   extraBashAllowList?(record: RunRecord): RegExp[];
   writeScope: WriteScope;
+  /** Works in the target repos, so the run's worktrees must exist before it starts. */
+  needsWorkspace: boolean;
   /**
    * JIRA MCP tools the role gets when a JIRA MCP server is configured:
    * `issue` = fetch one issue; `read` = fetch, search and other read-only tools.

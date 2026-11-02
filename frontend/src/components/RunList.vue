@@ -1,15 +1,34 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
+import { api } from "../api.js";
 import { useRouter } from "vue-router";
 import { useRunsStore } from "../stores/runs.js";
 import LaunchRunDialog from "./LaunchRunDialog.vue";
-import { formatTokens, formatUsd, stateChipClass, totalTokens } from "../types.js";
+import { formatTokens, formatUsd, stateChipClass, totalTokens, type Slots } from "../types.js";
 
 const store = useRunsStore();
 const router = useRouter();
 const showDialog = ref(false);
 
-onMounted(() => store.refresh());
+// Global role-session slots, shared by all runs (MAX_CONCURRENT_ROLES).
+const slots = ref<Slots | null>(null);
+async function refreshSlots() {
+  try {
+    slots.value = await api.getSlots();
+  } catch {
+    slots.value = null;
+  }
+}
+let timer: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  store.refresh();
+  refreshSlots();
+  timer = setInterval(() => {
+    refreshSlots();
+    store.refresh();
+  }, 5000);
+});
+onUnmounted(() => clearInterval(timer));
 
 function onLaunched(runId: string) {
   showDialog.value = false;
@@ -21,6 +40,9 @@ function onLaunched(runId: string) {
   <div>
     <div class="row">
       <h2>Runs</h2>
+      <span v-if="slots" class="chip" :class="slots.queued > 0 ? 'awaiting' : 'idle'" title="Role sessions running across all runs (MAX_CONCURRENT_ROLES)">
+        {{ slots.running }}/{{ slots.limit > 0 ? slots.limit : "∞" }} roles running<template v-if="slots.queued">, {{ slots.queued }} queued</template>
+      </span>
       <div class="spacer" />
       <button class="primary" @click="showDialog = true">Launch new run</button>
       <button @click="store.refresh()" :disabled="store.loading">Refresh</button>

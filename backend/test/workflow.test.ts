@@ -1,13 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RoleOutput, RunState } from "../src/orchestrator/types.js";
 import type { RunRoleAgentArgs, RunRoleAgentResult } from "../src/sdk/runRole.js";
 
 /*
  * Drives the real state machine (workflow.ts + runStore + roles) with a
- * scripted fake of `runRoleAgent`, so no model is called. External actions
- * (git, gh, JIRA) are mocked.
+ * scripted fake of `runRoleAgent`, so no model is called. gh and JIRA are
+ * mocked; git is real (a throwaway repo), so worktrees are really created.
  */
 
 const tmp = await vi.hoisted(async () => {
@@ -26,25 +27,41 @@ vi.mock("../src/config.js", async (importOriginal) => {
       repoRoot: tmp,
       runsDir: join(tmp, "runs"),
       sessionsDir: join(tmp, "sessions"),
+      worktreesDir: join(tmp, "worktrees"),
     },
     config: {
       ...orig.config,
       maxFixIterations: 3,
       maxRunCostUsd: 0,
       reviewAutoRoute: false,
+      maxConcurrentRoles: 0,
+      worktree: { fetchBase: false, installDeps: true, copyFiles: [".env.test"] },
     },
   };
 });
 
 type Script = (role: string, state: RunState, args: RunRoleAgentArgs) => Promise<RunRoleAgentResult> | RunRoleAgentResult;
 let script: Script;
-const calls: Array<{ role: string; state: RunState; prompt: string; model: string; extraTools: string[]; mcpServers: string[] }> = [];
+const calls: Array<{
+  runId: string;
+  role: string;
+  state: RunState;
+  prompt: string;
+  model: string;
+  extraTools: string[];
+  mcpServers: string[];
+  cwd: string;
+  repoPaths: string[];
+}> = [];
 
 vi.mock("../src/sdk/runRole.js", () => ({
   runRoleAgent: vi.fn(async (args: RunRoleAgentArgs) => {
     const { loadRun } = await import("../src/orchestrator/runStore.js");
     const state = loadRun(args.runId)!.state;
     calls.push({
+      runId: args.runId,
+      cwd: args.cwd,
+      repoPaths: args.repoPaths,
       role: args.role,
       state,
       prompt: args.userPrompt,
@@ -58,18 +75,31 @@ vi.mock("../src/sdk/runRole.js", () => ({
 
 const createPr = vi.fn(async (_input: { repoPath: string; baseBranch: string; body: string; titleHint: string }) => "https://github.com/acme/app/pull/1");
 vi.mock("../src/external/gh.js", () => ({ createPr: (input: Parameters<typeof createPr>[0]) => createPr(input) }));
-vi.mock("../src/external/git.js", () => ({
-  checkoutOrCreateBranch: vi.fn(async () => "created"),
-  currentBranch: vi.fn(async () => "master"),
-}));
 vi.mock("../src/external/jiraMcp.js", () => ({ postJiraComment: vi.fn(async () => undefined) }));
 
 const { config } = await import("../src/config.js");
 const { createRun, loadRun } = await import("../src/orchestrator/runStore.js");
 const workflow = await import("../src/orchestrator/workflow.js");
 
-const mutableConfig = config as unknown as { maxFixIterations: number; maxRunCostUsd: number; reviewAutoRoute: boolean };
+const mutableConfig = config as unknown as {
+  maxFixIterations: number;
+  maxRunCostUsd: number;
+  reviewAutoRoute: boolean;
+  maxConcurrentRoles: number;
+};
 const repoPath = join(tmp, "app");
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
+}
+
+// A real repo on `main` with one commit and an untracked file to copy into worktrees.
+mkdirSync(repoPath, { recursive: true });
+git(repoPath, "init", "-q", "-b", "main");
+writeFileSync(join(repoPath, "README.md"), "app\n");
+git(repoPath, "add", ".");
+git(repoPath, "commit", "-q", "-m", "init");
+writeFileSync(join(repoPath, ".env.test"), "SECRET=1\n");
 
 function out(o: Partial<RoleOutput>): RunRoleAgentResult {
   return {
@@ -104,22 +134,22 @@ function happyScript(runId: string): Script {
 }
 
 let seq = 0;
-function newRun(models?: Record<string, string>, jira = false): string {
+function newRun(models?: Record<string, string>, jira = false, label?: string): string {
   const runId = `RUN-${++seq}`;
   createRun({
     runId,
-    label: runId,
+    label: label ?? runId,
     source: jira
       ? { kind: "jira", ticket: "PROJ-7", ticketUrl: "https://acme.atlassian.net/browse/PROJ-7" }
       : { kind: "manual", type: "feature", title: "Add widget", description: "d", acceptanceCriteria: ["a"] },
-    repos: [{ path: repoPath, baseBranch: "master", aiGuidelinePath: null }],
+    repos: [{ path: repoPath, baseBranch: "main", aiGuidelinePath: null }],
     models,
   });
   return runId;
 }
 
 async function settle(runId: string, until: (s: RunState) => boolean): Promise<RunState> {
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 1000; i++) {
     const s = loadRun(runId)!.state;
     if (until(s)) return s;
     if (s === "failed") throw new Error(`run failed: ${loadRun(runId)!.failureReason}`);
@@ -135,7 +165,7 @@ beforeEach(() => {
   mutableConfig.maxFixIterations = 3;
   mutableConfig.maxRunCostUsd = 0;
   mutableConfig.reviewAutoRoute = false;
-  mkdirSync(repoPath, { recursive: true });
+  mutableConfig.maxConcurrentRoles = 0;
 });
 
 afterAll(() => {
@@ -176,7 +206,7 @@ describe("workflow state machine", () => {
     ]);
     // The PR payload from the approval reached `gh pr create`.
     expect(createPr).toHaveBeenCalledTimes(1);
-    expect(createPr.mock.calls[0]![0]).toMatchObject({ body: "# Add widget\n\nbody", baseBranch: "master" });
+    expect(createPr.mock.calls[0]![0]).toMatchObject({ body: "# Add widget\n\nbody", baseBranch: "main" });
 
     // Phase-specific prompts and per-role models.
     expect(calls.find((c) => c.state === "unit_tests_red_running")!.prompt).toContain("RED");
@@ -348,6 +378,169 @@ describe("JIRA MCP wiring", () => {
     expect(await settle(runId, isGateOrEnd)).toBe("failed");
     expect(loadRun(runId)!.failureReason).toMatch(/no JIRA MCP server is configured/);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("parallel runs", () => {
+  const wt = (runId: string) => join(tmp, "worktrees", runId, "app");
+
+  async function toBranchGate(runId: string): Promise<void> {
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_plan_approval");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_branch_names");
+  }
+
+  it("gives each run its own worktree and never touches the user's checkout", async () => {
+    const a = newRun();
+    const b = newRun();
+    script = (role, state, args) => happyScript(args.runId)(role, state, args);
+    await Promise.all([toBranchGate(a), toBranchGate(b)]);
+
+    // Analyst works in its run folder; every repo-facing role in the run's worktree.
+    for (const runId of [a, b]) {
+      const dev = calls.find((c) => c.runId === runId && c.role === "developer")!;
+      expect(dev.cwd).toBe(wt(runId));
+      expect(dev.repoPaths).toEqual([wt(runId)]);
+      expect(dev.prompt).toContain("this run's own git worktree");
+      expect(existsSync(join(wt(runId), ".env.test"))).toBe(true); // WORKTREE_COPY_FILES
+      expect(git(wt(runId), "status", "--porcelain")).toBe("?? .env.test");
+    }
+
+    await Promise.all([workflow.resumeAfterApproval(a, "approve"), workflow.resumeAfterApproval(b, "approve")]);
+    expect(await settle(a, isGateOrEnd)).toBe("awaiting_review_decision");
+    expect(await settle(b, isGateOrEnd)).toBe("awaiting_review_decision");
+
+    const branchA = loadRun(a)!.repos[0]!.branch!;
+    const branchB = loadRun(b)!.repos[0]!.branch!;
+    expect(branchA).not.toBe(branchB);
+    expect(git(wt(a), "branch", "--show-current")).toBe(branchA);
+    expect(git(wt(b), "branch", "--show-current")).toBe(branchB);
+    // The user's checkout stays on main, untouched.
+    expect(git(repoPath, "branch", "--show-current")).toBe("main");
+    expect(git(repoPath, "status", "--porcelain")).toBe("?? .env.test");
+
+    const reviewer = calls.find((c) => c.runId === a && c.role === "reviewer")!;
+    expect(reviewer.prompt).toContain(`\`${wt(a)}\`: \`git diff main...HEAD\``);
+  });
+
+  it("suggests a run-specific branch when the templated name is taken, and re-opens the gate on conflicts", async () => {
+    const a = newRun(undefined, false, "PROJ-9");
+    const b = newRun(undefined, false, "PROJ-9"); // same ticket → same templated name
+    script = (role, state, args) => happyScript(args.runId)(role, state, args);
+    await toBranchGate(a);
+    await workflow.resumeAfterApproval(a, "approve");
+    await settle(a, isGateOrEnd);
+    const taken = loadRun(a)!.repos[0]!.branch!;
+
+    await toBranchGate(b);
+    const proposal = JSON.parse(readFileSync(join(tmp, "runs", b, "orchestrator", "proposed-branches.json"), "utf8"));
+    expect(proposal.perRepo[0].suggestedBranch).toBe(`${taken}-${b.split("-").pop()!.toLowerCase()}`);
+    expect(proposal.perRepo[0].note).toContain(`run ${a}`);
+
+    // Forcing the taken name keeps the gate open with an explanation instead of failing the run.
+    const edited = JSON.stringify({ perRepo: [{ ...proposal.perRepo[0], suggestedBranch: taken }] });
+    await workflow.resumeAfterApproval(b, "edit", edited);
+    const rec = loadRun(b)!;
+    expect(rec.state).toBe("awaiting_branch_names");
+    expect(rec.pendingApproval?.summary).toMatch(/already checked out in run RUN-\d+/);
+    expect(git(wt(b), "branch", "--show-current")).toBe(""); // still detached
+
+    // The gate keeps the user's (conflicting) name for editing; approving a free name proceeds.
+    const kept = JSON.parse(readFileSync(join(tmp, "runs", b, "orchestrator", "proposed-branches.json"), "utf8"));
+    expect(kept.perRepo[0].suggestedBranch).toBe(taken);
+    await workflow.resumeAfterApproval(b, "edit", JSON.stringify(proposal));
+    expect(await settle(b, isGateOrEnd)).toBe("awaiting_review_decision");
+    expect(loadRun(b)!.repos[0]!.branch).toBe(proposal.perRepo[0].suggestedBranch);
+  });
+
+  it("queues roles beyond MAX_CONCURRENT_ROLES across runs, first come first served", async () => {
+    mutableConfig.maxConcurrentRoles = 1;
+    const a = newRun();
+    const b = newRun();
+    let finishA!: () => void;
+    const aBlocked = new Promise<void>((r) => (finishA = r));
+    script = async (role, state, args) => {
+      if (args.runId === a) await aBlocked;
+      return happyScript(args.runId)(role, state, args);
+    };
+    await workflow.startRun(a);
+    await workflow.startRun(b);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(workflow.roleSlots.running).toBe(1);
+    expect(workflow.roleSlots.queued).toBe(1);
+    expect(loadRun(b)!.roles.analyst![0]!.status).toBe("queued");
+    expect(calls.map((c) => c.runId)).toEqual([a]);
+
+    finishA();
+    expect(await settle(a, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    expect(await settle(b, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    expect(calls.map((c) => c.runId)).toEqual([a, b]);
+    expect(workflow.roleSlots.running).toBe(0);
+  });
+
+  it("aborting a queued role frees its place without running it", async () => {
+    mutableConfig.maxConcurrentRoles = 1;
+    const a = newRun();
+    const b = newRun();
+    let finishA!: () => void;
+    const aBlocked = new Promise<void>((r) => (finishA = r));
+    script = async (role, state, args) => {
+      await aBlocked;
+      return happyScript(args.runId)(role, state, args);
+    };
+    await workflow.startRun(a);
+    await workflow.startRun(b);
+    await new Promise((r) => setTimeout(r, 30));
+    workflow.abortRun(b);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(workflow.roleSlots.queued).toBe(0);
+    expect(loadRun(b)!.state).toBe("paused");
+    expect(loadRun(b)!.roles.analyst![0]!.status).toBe("aborted");
+    finishA();
+    await settle(a, isGateOrEnd);
+    expect(calls.filter((c) => c.runId === b)).toHaveLength(0);
+  });
+
+  it("removes a finished run's worktree and re-creates it on the branch if the run continues", async () => {
+    const runId = newRun();
+    script = happyScript(runId);
+    await toBranchGate(runId);
+    await workflow.resumeAfterApproval(runId, "approve");
+    await settle(runId, isGateOrEnd);
+    const branch = loadRun(runId)!.repos[0]!.branch!;
+
+    await expect(workflow.removeRunWorkspaces(runId, false)).rejects.toThrow(/done, failed or paused/);
+    workflow.abortRun(runId); // → paused
+    // Uncommitted work blocks removal unless forced.
+    writeFileSync(join(wt(runId), "wip.txt"), "x");
+    const kept = await workflow.removeRunWorkspaces(runId, false);
+    expect(kept[0]!.removed).toBe(false);
+    expect(existsSync(wt(runId))).toBe(true);
+    const removed = await workflow.removeRunWorkspaces(runId, true);
+    expect(removed[0]!.removed).toBe(true);
+    expect(existsSync(wt(runId))).toBe(false);
+    expect(loadRun(runId)!.repos[0]!.workPath).toBeNull();
+    expect(git(repoPath, "branch", "--list", branch)).toContain(branch);
+
+    await workflow.jumpToRole(runId, "reviewer");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_review_decision");
+    expect(git(wt(runId), "branch", "--show-current")).toBe(branch);
+  });
+
+  it("keeps pre-worktree runs working in the user's checkout", async () => {
+    const runId = newRun();
+    loadRun(runId)!.workspace = "in-place";
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve");
+    await settle(runId, isGateOrEnd);
+    expect(calls.find((c) => c.role === "developer")!.cwd).toBe(repoPath);
+    expect(existsSync(join(tmp, "worktrees", runId))).toBe(false);
   });
 });
 

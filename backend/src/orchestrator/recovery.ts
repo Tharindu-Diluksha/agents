@@ -17,7 +17,7 @@ export function recoverRuns(): void {
     if (!role) continue;
     const attempts = record.roles[role] ?? [];
     const last = attempts[attempts.length - 1];
-    if (!last || last.status !== "running") continue;
+    if (!last || (last.status !== "running" && last.status !== "queued")) continue;
 
     last.status = "failed";
     last.errorMessage = "orchestrator restarted mid-run; resuming via session replay";
