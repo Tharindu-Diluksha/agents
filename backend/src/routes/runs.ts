@@ -7,7 +7,9 @@ import { config } from "../config.js";
 import { emit } from "../events.js";
 import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
-import { createRun, listRuns, loadRun } from "../orchestrator/runStore.js";
+import { testJiraMcp } from "../external/jiraMcp.js";
+import { describeJiraMcp } from "../external/jiraMcpConfig.js";
+import { createRun, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
 import { abortRun, jumpToRole, resumeAfterApproval, skipCurrent, startRun } from "../orchestrator/workflow.js";
 
@@ -30,9 +32,16 @@ const ManualSourceBody = z.object({
   acceptanceCriteria: z.array(z.string()).default([]),
 });
 
+const ModelsBody = z
+  .object(Object.fromEntries(ROLES.map((r) => [r, z.string().trim().optional()])) as Record<RoleId, z.ZodOptional<z.ZodString>>)
+  .partial()
+  .optional();
+
 const LaunchBody = z.object({
   source: z.discriminatedUnion("kind", [JiraSourceBody, ManualSourceBody]),
   repos: z.array(RepoBody).min(1),
+  /** Per-role model overrides for this run; blank/missing roles use the server defaults. */
+  models: ModelsBody,
 });
 
 const ApproveBody = z.object({
@@ -59,6 +68,19 @@ function slugifyTitle(title: string): string {
 }
 
 export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
+  /** Server-side defaults the UI shows (model per role, limits). */
+  app.get("/api/config", async () => ({
+    roles: ROLES,
+    models: config.models,
+    maxFixIterations: config.maxFixIterations,
+    maxRunCostUsd: config.maxRunCostUsd,
+    reviewAutoRoute: config.reviewAutoRoute,
+    jira: describeJiraMcp(),
+  }));
+
+  /** Connects to the configured JIRA MCP server and reports status and tools. */
+  app.post("/api/jira/test", async () => testJiraMcp());
+
   app.post("/api/runs", async (req, reply) => {
     const parsed = LaunchBody.safeParse(req.body);
     if (!parsed.success) {
@@ -69,6 +91,17 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     if (missing) {
       reply.code(400).send({ error: "repo_not_found", repoPath: missing.path });
       return;
+    }
+
+    if (parsed.data.source.kind === "jira") {
+      const jira = describeJiraMcp();
+      if (!jira.configured) {
+        reply.code(400).send({
+          error: "jira_mcp_not_configured",
+          detail: jira.error ?? "Configure a JIRA MCP server (jira-mcp.json or JIRA_MCP_* env vars) or use a manual description.",
+        });
+        return;
+      }
     }
 
     let label: string;
@@ -94,11 +127,15 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       baseBranch: r.baseBranch ?? "master",
       aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
     }));
+    const models = Object.fromEntries(
+      Object.entries(parsed.data.models ?? {}).filter(([, v]) => typeof v === "string" && v.length > 0),
+    ) as Partial<Record<RoleId, string>>;
     const record = createRun({
       runId,
       label,
       source,
       repos,
+      models: Object.keys(models).length > 0 ? models : undefined,
     });
 
     emit({ type: "run.created", runId, label, repoPaths: repos.map((r) => r.path) });
@@ -120,6 +157,8 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
       pendingApproval: r.pendingApproval,
+      totalCostUsd: totalCostUsd(r),
+      totalUsage: usageTotals(r),
     }));
     return { runs };
   });
@@ -132,6 +171,9 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     }
     return {
       ...record,
+      totalCostUsd: totalCostUsd(record),
+      totalUsage: usageTotals(record),
+      effectiveModels: Object.fromEntries(ROLES.map((r) => [r, record.models?.[r] || config.models[r]])),
       artifacts: listArtifactsForRun(record).map((a) => ({ owner: a.owner, name: a.name, relative: a.relative })),
     };
   });

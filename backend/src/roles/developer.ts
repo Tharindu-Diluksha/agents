@@ -1,95 +1,119 @@
-import { aiGuidelineSection, artifactRelative, headerFor, maybeAttach, primaryRepo } from "./common.js";
+import type { RunRecord } from "../orchestrator/types.js";
+import {
+  aiGuidelineSection,
+  artifactRelative,
+  BASH,
+  endOfTurnExample,
+  headerFor,
+  maybeAttach,
+  orchestratorSection,
+  primaryRepo,
+} from "./common.js";
 import type { RoleSpec } from "./types.js";
+
+/** True once the user approved the plan and branches were created. */
+export function planApproved(record: RunRecord): boolean {
+  return record.stateHistory.some(
+    (h) => h.to === "unit_tests_red_running" || h.to === "developer_implementing",
+  );
+}
 
 export const developer: RoleSpec = {
   id: "developer",
+  title: "Developer",
   promptFile: "developer.md",
-  allowedTools: [
-    "Read",
-    "Glob",
-    "Grep",
-    "Write",
-    "Edit",
-    "Bash",
-    "mcp__atlassian-local__getJiraIssue",
-  ],
+  allowedTools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+  // May read the ticket for context on JIRA-sourced runs.
+  jiraAccess: "issue",
   bashAllowList: [
-    /^git\s+(status|diff|log|show|branch(\s|$)|rev-parse|checkout\s+-b\s+\S+$|checkout\s+\S+$|add\b|commit\b|stash\b|fetch\b|pull\s+--rebase\b)/,
-    /^npm\s+(test|run\s+(test|typecheck|lint|build|dev|typecheck:watch))(\s|$)/,
-    /^npx\s+(vitest|tsc)(\s|$)/,
-    /^pnpm\s+(test|run\s+(test|typecheck|lint|build))(\s|$)/,
+    BASH.gitRead,
+    BASH.gitBranchRead,
+    BASH.gitCommit,
+    BASH.gitRestore,
+    BASH.gitStash,
+    /^git\s+fetch(\s|$)/,
+    ...BASH.testRunners,
+    /^npm\s+run\s+build(\s|$)/,
+    /^pnpm\s+run\s+build(\s|$)/,
     /^node\s+(--version|-v)$/,
-    /^cat\s+package\.json$/,
-    /^ls\b/,
-    /^dir\b/,
+    BASH.catPackageJson,
+    BASH.ls,
   ],
+  writeScope: "repos-and-run",
   maxTurns: 100,
   cwdFor(record) {
     return primaryRepo(record).path;
   },
-  buildInput(record, { feedback }) {
+  buildInput(record, ctx) {
     const adrPath = artifactRelative(record, "developer", "adr.md");
     const planPath = artifactRelative(record, "developer", "impl-plan.md");
+    const planning = record.state === "developer_planning";
 
     const lines = [
       headerFor(record, "Developer"),
-      "## Required reading",
-      maybeAttach(record, "analyst", "feature-doc.md", "Feature doc (from Analyst)"),
-      maybeAttach(record, "reviewer", "review-report.md", "Code review report (if present — address every HIGH/MED finding)"),
-      maybeAttach(record, "tester", "test-report.md", "Test report (if present — fix every failure classified as app-bug)"),
+      `## Phase: ${planning ? "1 — Planning" : "2 — Implementation"}`,
       "",
-      "## Your workflow",
-      "",
-      "**Phase 1 — Planning (if ADR + impl plan not yet written).**",
-      "1. Confirm existing tests pass: run `npm test` in the target repo. If anything is red before you touch the code, emit `status: \"blocked\"` with a terminal JSON block describing which tests failed. Do NOT proceed.",
-      `2. Write an ADR to \`${adrPath}\` using \`templates/adr.md\`.`,
-      `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. The plan should list every file to touch and the test(s) you will add first (TDD).`,
-      "4. End your turn with `approvalRequest.action: \"proceed_to_next\"` so the user can approve the plan.",
-      "",
-      "**Phase 2 — Implementation (only after the orchestrator passes `plan_approved` or feedback requiring fixes).**",
-      "1. Follow the plan. TDD: write a failing test, make it pass, keep the suite green.",
-      "2. Commit incrementally with meaningful messages. DO NOT push.",
-      "3. When done, run the full test suite once more and emit `status: \"done\"`. The orchestrator will auto-advance to the Reviewer.",
-      "",
-      "Boundaries:",
-      "- You MUST NOT push to any remote. The PR Creator role handles pushes.",
-      "- Bash commands outside the allowlist (git, npm/pnpm test/typecheck/lint/build, npx vitest/tsc, cat package.json, ls/dir) will be blocked.",
-      "- Do not edit files outside the target repo.",
-      aiGuidelineSection(record, "developer"),
     ];
 
-    if (feedback === "plan_approved") {
-      lines.push("", "## Orchestrator signal", "", "The user has APPROVED your plan. Proceed with implementation now.");
-    } else if (feedback === "review_report_attached") {
-      lines.push("", "## Orchestrator signal", "", "The user requires fixes based on the review report attached above. Address every HIGH/MED finding, then re-run the test suite.");
-    } else if (feedback === "handoff_from_tester") {
-      lines.push("", "## Orchestrator signal", "", "The Tester classified a failure as an application bug. Fix it based on the test report above and re-run the suite.");
-    } else if (feedback && feedback.length > 0) {
-      lines.push("", "## Feedback from the user", "", feedback);
+    if (planning) {
+      lines.push(
+        "1. Confirm existing tests pass: run the repo's unit test command. If anything is red before you touch the code, emit `status: \"blocked\"` describing which tests failed. Do NOT proceed.",
+        `2. Write an ADR to \`${adrPath}\` using \`templates/adr.md\`.`,
+        `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. List every file to touch, and fill in the **Test plan** section: the unit tests (per AC-id) the Unit Tester will write first, and the integration points the Integration Tester should cover.`,
+        "4. End your turn with `approvalRequest.action: \"proceed_to_next\"` so the user can approve the plan. Do NOT implement in this phase.",
+        "",
+        "## Required reading",
+        maybeAttach(record, "analyst", "feature-doc.md", "Feature doc (from Analyst)"),
+      );
+    } else {
+      lines.push(
+        "The orchestrator has created the feature branch and the **Unit Tester has already written failing unit tests** from your plan (see the unit test report below). Your job is to make them pass.",
+        "",
+        "1. Implement the plan. Run the unit tests often; the goal is a fully green suite.",
+        "2. Do NOT delete, skip, or weaken the Unit Tester's tests to get green. If you are convinced a test contradicts the feature doc or the approved plan, stop and emit `status: \"blocked\"` with `handoff: { \"nextRole\": \"unitTester\", \"notes\": \"<which test and why>\" }`.",
+        "3. Commit incrementally with meaningful messages. DO NOT push.",
+        "4. When done, run the full unit suite plus typecheck/lint once more and emit `status: \"done\"`. The orchestrator then sends your change to the Unit Tester for verification, then the Integration Tester, then the Reviewer.",
+        "",
+        "If a review report or a test report that classifies an **app-bug** is attached below, it is the reason you are being re-run: fix exactly what it describes.",
+        "",
+        "## Required reading",
+        maybeAttach(record, "analyst", "feature-doc.md", "Feature doc (from Analyst)"),
+        maybeAttach(record, "developer", "impl-plan.md", "Your approved implementation plan"),
+        maybeAttach(record, "unitTester", "unit-test-report.md", "Unit test report"),
+        maybeAttach(record, "integrationTester", "integration-test-report.md", "Integration test report"),
+        maybeAttach(record, "reviewer", "review-report.md", "Code review report"),
+        maybeAttach(record, "e2eTester", "e2e-test-report.md", "E2E test report"),
+      );
     }
 
     lines.push(
       "",
-      "## End-of-turn JSON block",
-      "",
-      "Example (planning phase):",
-      "",
-      "```json",
-      JSON.stringify(
-        {
-          status: "awaiting_approval",
-          artifacts: [adrPath, planPath],
-          approvalRequest: {
-            action: "proceed_to_next",
-            summary: "ADR and implementation plan ready for review.",
-            payloadPaths: [],
-          },
-          handoff: null,
-        },
-        null,
-        2,
-      ),
-      "```",
+      "## Boundaries",
+      "- You MUST NOT push to any remote, and MUST NOT switch branches. The orchestrator manages branches; the PR Creator pushes.",
+      "- Bash is limited to one command at a time (no `;`, `&&`, pipes or redirects, except a leading `cd <repo> && `): git status/diff/log/show/add/commit/restore/stash/fetch, npm/pnpm test*/typecheck*/lint*/build, npx vitest/jest/tsc, cat package.json, ls/dir.",
+      "- File edits are limited to the target repo(s) and this run's artifact folder.",
+      aiGuidelineSection(record, "developer"),
+      orchestratorSection(ctx),
+    );
+
+    lines.push(
+      planning
+        ? endOfTurnExample("planning", {
+            status: "awaiting_approval",
+            artifacts: [adrPath, planPath],
+            approvalRequest: {
+              action: "proceed_to_next",
+              summary: "ADR and implementation plan ready for review.",
+              payloadPaths: [],
+            },
+            handoff: null,
+          })
+        : endOfTurnExample("implementation finished", {
+            status: "done",
+            artifacts: [],
+            approvalRequest: null,
+            handoff: null,
+          }),
     );
     return lines.join("\n");
   },

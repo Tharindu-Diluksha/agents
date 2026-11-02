@@ -7,6 +7,20 @@ loadDotenv({ path: resolve(process.cwd(), "../.env") });
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+const DEFAULT_MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
+
+/** `CLAUDE_MODEL_<ROLE>` overrides `CLAUDE_MODEL` for one role. */
+function roleModel(envSuffix: string): string {
+  return process.env[`CLAUDE_MODEL_${envSuffix}`] || DEFAULT_MODEL;
+}
+
+function num(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export const paths = {
   repoRoot: resolve(here, "..", ".."),
   rolesDir: resolve(here, "..", "..", "roles"),
@@ -23,11 +37,30 @@ export const config = {
   // Optional. The SDK will reuse the local Claude CLI login (claude /login) when
   // this is unset, so most users won't need it.
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
-  model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6",
+  /** Default model for every role. Per-role env vars and per-run overrides take precedence. */
+  model: DEFAULT_MODEL,
+  models: {
+    analyst: roleModel("ANALYST"),
+    developer: roleModel("DEVELOPER"),
+    unitTester: roleModel("UNIT_TESTER"),
+    integrationTester: roleModel("INTEGRATION_TESTER"),
+    reviewer: roleModel("REVIEWER"),
+    e2eTester: roleModel("E2E_TESTER"),
+    prCreator: roleModel("PR_CREATOR"),
+  },
+  /** Fix loops (review rejection, tester → Developer hand-back) allowed before the run pauses. 0 = unlimited. */
+  maxFixIterations: num("MAX_FIX_ITERATIONS", 3),
+  /** Total USD a run may spend before it pauses. 0 = unlimited. */
+  maxRunCostUsd: num("MAX_RUN_COST_USD", 0),
+  /**
+   * When true, the Reviewer gate is decided automatically from review-findings.json:
+   * any BLOCKER/HIGH goes straight back to the Developer, otherwise the run advances.
+   */
+  reviewAutoRoute: (process.env.REVIEW_AUTO_ROUTE ?? "false").toLowerCase() === "true",
   aiGuidelinePathDefault: process.env.AI_GUIDELINE_PATH_DEFAULT ?? "docs/ai-guideline",
   retry: {
-    maxAttempts: Number(process.env.RUN_RETRY_MAX_ATTEMPTS ?? 3),
-    initialDelayMs: Number(process.env.RUN_RETRY_INITIAL_DELAY_MS ?? 1000),
+    maxAttempts: num("RUN_RETRY_MAX_ATTEMPTS", 3),
+    initialDelayMs: num("RUN_RETRY_INITIAL_DELAY_MS", 1000),
   },
   branchNameTemplate: process.env.BRANCH_NAME_TEMPLATE ?? "feature/{ticket}-{slug}",
 } as const;

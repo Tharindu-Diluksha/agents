@@ -1,18 +1,59 @@
 # Agent Orchestrator
 
-A generic multi-agent Claude orchestrator that takes a JIRA ticket through analysis → implementation → review → UI tests → GitHub PR, driven through a small Vue UI. Each role runs in its own Claude Agent SDK session; re-runs resume that same session; roles hand off through markdown artifact files on disk.
+A generic multi-agent Claude orchestrator that takes a JIRA ticket (or a manual description) through analysis → TDD implementation → unit / integration tests → review → end-to-end tests → GitHub PR, driven through a small Vue UI. Each role runs in its own Claude Agent SDK session; re-runs resume that same session; roles hand off through markdown artifact files on disk.
 
 ## Roles
 
 | Role | Reads | Writes | Mutating actions (orchestrator-gated) |
 | ---- | ----- | ------ | ------------------------------------- |
-| Product Analyst | JIRA ticket or manual description, ai-guideline doc (optional) | `feature-doc.md`, optionally `proposed-jira-comment.md` | Post JIRA comment |
-| Developer | feature doc, JIRA ticket, ai-guideline doc (optional) | `adr.md`, `impl-plan.md`, source edits in target repo | — (plan requires user approval before implementing) |
-| Code Reviewer | diff, feature doc, ADR, impl plan, ai-guideline doc (optional) | `review-report.md` | — |
-| Tester | feature doc, target repo | `test-report.md`, Playwright suite edits | Create a new Playwright suite |
-| PR Creator | all prior artifacts | `pr-description.md` | Create the GitHub PR |
+| Product Analyst | JIRA ticket or manual description, ai-guideline doc (optional) | `feature-doc.md` (numbered `AC-n` criteria), optionally `proposed-jira-comment.md` | Post JIRA comment |
+| Developer | feature doc, plan, test/review reports | `adr.md`, `impl-plan.md` (incl. test plan), source edits | — (plan requires approval; branches created by the orchestrator) |
+| Unit Tester | feature doc, plan | failing unit tests first (RED), then verifies them (GREEN); `unit-test-report.md` | — |
+| Integration Tester | feature doc, plan, unit report | integration tests, `integration-test-report.md` | — |
+| Code Reviewer | diff vs base, feature doc, ADR, plan, test reports | `review-report.md`, `review-findings.json` | — |
+| E2E Tester | feature doc, plan, integration report | Playwright tests, `e2e-test-report.md` | Create a new Playwright suite |
+| PR Creator | all prior artifacts | one `<repo>-pr-description.md` per repo, with an AC → tests table | Create the GitHub PR(s) |
 
-Flow: Analyst → Developer → Reviewer ⇄ Developer → Tester ⇄ Developer → PR Creator. Loops run automatically; every forward transition and every mutating external action requires a UI click.
+Flow:
+
+```
+Analyst → [approve] → Developer (plan) → [approve plan] → [approve branch names]
+  → Unit Tester (RED: failing tests) → Developer (implement) → Unit Tester (GREEN: verify)
+  → Integration Tester → Reviewer → [approve / send back] → E2E Tester → PR Creator → [approve PR]
+```
+
+Any tester that finds an application bug, or a review sent back for fixes, returns the work to the Developer; the change then goes through Unit (GREEN) → Integration → Review → E2E again. After `MAX_FIX_ITERATIONS` such loops the run pauses for you. Every mutating external action needs a UI click.
+
+## Models
+
+Each role can run on its own model:
+
+- `CLAUDE_MODEL` — default for every role.
+- `CLAUDE_MODEL_<ROLE>` — per-role default (`ANALYST`, `DEVELOPER`, `UNIT_TESTER`, `INTEGRATION_TESTER`, `REVIEWER`, `E2E_TESTER`, `PR_CREATOR`).
+- Launch dialog → "Models per role" — overrides for a single run.
+
+## Token usage
+
+The run page has a **Token usage** table: per role, the model, number of attempts, input, output, cache-read and cache-write tokens, total tokens and cost, plus a run total. A running role's numbers update live. The role tabs and the run list show token and cost totals too.
+
+## JIRA MCP server
+
+Only needed for runs launched from a JIRA ticket. Configure it either way:
+
+- **File**: copy `jira-mcp.example.json` to `jira-mcp.json` (gitignored) and edit it. Changes apply without a restart. `JIRA_MCP_CONFIG` can point to a different file.
+- **Env vars**: `JIRA_MCP_COMMAND` + `JIRA_MCP_ARGS` (stdio), or `JIRA_MCP_URL` + `JIRA_MCP_TRANSPORT` + `JIRA_MCP_HEADERS` (http/sse). See `.env.example`.
+
+`server` uses the same shape as a Claude Code `.mcp.json` entry. Strings can reference env vars as `${NAME}`, so tokens can stay in `.env`. If your server's tool names differ from Atlassian's (`getJiraIssue`, `searchJiraIssuesUsingJql`, `addCommentToJiraIssue`), set them under `tools` (or `JIRA_MCP_TOOL_*`).
+
+The launch dialog's JIRA tab shows the configured server and has a **Test connection** button that reports the connection status and whether the configured tools exist. The Analyst gets the read tools, the Developer can fetch the issue, and only the orchestrator can post a comment, after you approve it. Manual-description runs never get JIRA access.
+
+## Guard rails
+
+- **Tool permissions**: each role only gets its listed tools. Bash, Write and Edit are always checked by the orchestrator (a `PreToolUse` hook plus `canUseTool`): Bash commands must match the role's allowlist and may not chain (`;`, `&&`, pipes, redirects, `$(…)`), except for a leading `cd <repo> && `. File writes are limited to the target repos (or only the run folder, for Analyst / Reviewer / PR Creator), never inside `.git`.
+- **Fix-loop cap**: `MAX_FIX_ITERATIONS` (default 3).
+- **Cost budget**: `MAX_RUN_COST_USD` (default 0 = off) pauses the run before the next role once spent.
+- **Review auto-routing** (opt-in): `REVIEW_AUTO_ROUTE=true` routes the review gate from `review-findings.json`.
+- **Pause / abort**: Abort stops the running SDK session and pauses the run; "Jump → role" resumes from any role.
 
 ## Auth
 
@@ -40,8 +81,8 @@ In the launch dialog, pick a source — a JIRA ticket URL *or* a manual descript
 - `frontend/` — Vue 3 UI.
 - `roles/*.md` — system prompts (edit these to change role behavior; no code change needed).
 - `templates/*.md` — artifact scaffolds the roles fill in.
-- `runs/<ticket>/<role>/` — role artifacts for a given ticket (gitignored).
-- `sessions/<ticket>/<role>.json` — persisted SDK session ids so re-runs resume (gitignored).
+- `runs/<runId>/<role>/` — role artifacts for a run, plus `runs/<runId>/run.json` (state) (gitignored).
+- `sessions/<runId>/<role>.json` — persisted SDK session ids so re-runs resume (gitignored).
 
 See `CLAUDE.md` for guidance aimed at future Claude Code sessions working on this repo.
 

@@ -4,7 +4,7 @@ Runs may span multiple repos. If this run has N repos, produce N PR description 
 
 ## Operating principles
 
-- Allowed Bash (per repo via `cd <absolutePath> && …`): `git` (status/diff/log/show/branch/rev-parse, and `push -u origin <branch>`), `gh auth status`, `gh repo view`, `gh pr view`, `cat package.json`, `cat .github/pull_request_template.md`, `ls`/`dir`.
+- Bash is one command at a time (per repo via `cd <absolutePath> && …`; no other chaining, pipes or redirects). Allowed: `git` status/diff/log/show/rev-parse and branch listing, `git push -u origin <branch>`, `gh auth status`, `gh repo view`, `gh pr view`, `cat package.json`, `cat .github/pull_request_template.md`, `ls`/`dir`.
 - You MUST NOT run `gh pr create` yourself. The orchestrator does that after approval, once per repo.
 - You MAY push each feature branch so the PR(s) can be opened.
 
@@ -18,7 +18,7 @@ Runs may span multiple repos. If this run has N repos, produce N PR description 
 6. Write the PR description to the orchestrator-provided path for that repo. Include:
    - A short rationale (why, from the feature doc) in 1–3 sentences.
    - Summary of the changes in bullet points.
-   - Test coverage summary (what was added, suite green on your end).
+   - Test coverage: an **acceptance-criteria → tests** table (one row per AC-id, listing the unit, integration and E2E tests that cover it), taken from the three test reports.
    - A test plan the reviewer can run locally.
    - A link to the JIRA ticket.
 7. After all per-repo descriptions are written, emit `approvalRequest.action: "create_pr"` with `payloadPaths` containing every per-repo file.

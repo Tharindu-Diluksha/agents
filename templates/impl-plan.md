@@ -17,20 +17,28 @@ For each file: path, what changes, and why.
 
 ## Test plan (TDD)
 
-The first failing test to write:
+The Unit Tester writes these tests **before** you implement (they must fail first), then verifies them after. The Integration Tester covers the integration points. Reference the feature doc's acceptance-criteria IDs.
 
-- **File**: `{{path/to/test.ts}}`
-- **Behaviour under test**: {{one sentence}}
-- **Why this test first**: {{it exercises the smallest increment of the acceptance criteria}}
+### Unit tests (written first, by the Unit Tester)
 
-Subsequent tests in order:
+| AC-id | Test file | Behaviour under test |
+| ----- | --------- | -------------------- |
+| AC-1  | `{{path/to/foo.test.ts}}` | {{one sentence}} |
 
-- {{bullet}}
+### Integration points (Integration Tester)
+
+| AC-id | Boundary exercised | Happy path | Failure path(s) |
+| ----- | ------------------ | ---------- | --------------- |
+| AC-1  | {{e.g. POST /widgets → WidgetService → repo}} | {{...}} | {{...}} |
+
+### End-to-end flows (E2E Tester, user-facing ACs only)
+
+- AC-{{n}}: {{user flow}}
 
 ## Verification
 
 How the user can confirm end-to-end once the Developer emits `done`:
 
-- Run `npm test` in each affected repo — all green.
+- Run the unit and integration test suites in each affected repo — all green.
 - {{manual UI step if applicable}}
 - {{API call / log check if applicable}}

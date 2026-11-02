@@ -2,6 +2,8 @@ node_modules/
 dist/
 .env
 .env.local
+# JIRA MCP config may contain tokens (see jira-mcp.example.json)
+jira-mcp.json
 
 # Runtime state (role artifacts and session ids)
 runs/

@@ -1,4 +1,12 @@
-export const ROLES = ["analyst", "developer", "reviewer", "tester", "prCreator"] as const;
+export const ROLES = [
+  "analyst",
+  "developer",
+  "unitTester",
+  "integrationTester",
+  "reviewer",
+  "e2eTester",
+  "prCreator",
+] as const;
 export type RoleId = (typeof ROLES)[number];
 
 export type RunState =
@@ -9,13 +17,20 @@ export type RunState =
   | "developer_planning"
   | "awaiting_plan_approval"
   | "awaiting_branch_names"
+  /** Unit Tester writes failing tests from the plan (TDD red). */
+  | "unit_tests_red_running"
   | "developer_implementing"
+  /** Unit Tester verifies the Developer's change turned its tests green. */
+  | "unit_tests_green_running"
+  | "integration_tester_running"
   | "reviewer_running"
   | "awaiting_review_decision"
-  | "tester_running"
+  | "e2e_tester_running"
   | "awaiting_test_suite_approval"
   | "pr_creator_running"
   | "awaiting_pr_approval"
+  /** Stopped by the user, by the fix-loop cap, or by the cost budget. Resume with "jump to role". */
+  | "paused"
   | "done"
   | "failed";
 
@@ -53,10 +68,25 @@ export interface PendingApproval {
 export interface RoleAttempt {
   startedAt: string;
   endedAt?: string;
-  status: "running" | "done" | "awaiting_approval" | "blocked" | "failed";
+  status: "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
+  /** Run state when the attempt started — distinguishes e.g. unit-test red vs green phases. */
+  state?: RunState;
   sessionId?: string;
   errorMessage?: string;
   output?: RoleOutput;
+  /** Model id the attempt ran with. */
+  model?: string;
+  /** Cost and usage reported by the SDK's `result` message. */
+  costUsd?: number;
+  numTurns?: number;
+  usage?: AttemptUsage;
+}
+
+export interface AttemptUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
 }
 
 export interface RepoTarget {
@@ -100,4 +130,10 @@ export interface RunRecord {
   stateHistory: Array<{ at: string; from: RunState; to: RunState; reason?: string }>;
   pendingApproval: PendingApproval | null;
   failureReason?: string;
+  /** Why the run is in the `paused` state. */
+  pauseReason?: string;
+  /** Per-run model overrides; roles not listed use `config.models`. */
+  models?: Partial<Record<RoleId, string>>;
+  /** Number of fix loops (review rejection or a tester handing back to the Developer) so far. */
+  fixIterations?: number;
 }

@@ -2,7 +2,21 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { api } from "../api.js";
 import { useRunSocket } from "../composables/useRunSocket.js";
-import { ROLES, type RoleId, type RunDetail, type RunEvent, type RunState } from "../types.js";
+import {
+  addUsage,
+  emptyUsage,
+  formatTokens,
+  formatUsd,
+  ROLE_LABELS,
+  ROLES,
+  stateChipClass,
+  totalTokens,
+  type AttemptUsage,
+  type RoleId,
+  type RunDetail,
+  type RunEvent,
+} from "../types.js";
+import UsagePanel from "./UsagePanel.vue";
 import RoleStream from "./RoleStream.vue";
 import ArtifactPreview from "./ArtifactPreview.vue";
 import ApprovalCard from "./ApprovalCard.vue";
@@ -25,7 +39,19 @@ async function refresh() {
 
 onMounted(refresh);
 
+// Live token totals for the attempt currently running in each role.
+const liveUsage = ref<Partial<Record<RoleId, { usage: AttemptUsage; costUsd: number }>>>({});
+
 useRunSocket(props.id, (ev) => {
+  if (ev.type === "role.usage") {
+    // Not added to the stream; the final numbers land in run.json on role.ended.
+    liveUsage.value = { ...liveUsage.value, [ev.role]: { usage: ev.usage, costUsd: ev.costUsd } };
+    return;
+  }
+  if (ev.type === "role.started" || ev.type === "role.ended") {
+    const { [ev.role]: _drop, ...rest } = liveUsage.value;
+    liveUsage.value = rest;
+  }
   events.value.push(ev);
   if (events.value.length > 2000) events.value.splice(0, events.value.length - 2000);
   if (ev.type === "run.transitioned" || ev.type === "role.ended" || ev.type === "approval.requested" || ev.type === "approval.resolved" || ev.type === "run.failed") {
@@ -42,7 +68,46 @@ function roleChip(role: RoleId): { label: string; cls: string } {
   if (last.status === "done") return { label: "done", cls: "done" };
   if (last.status === "failed") return { label: "failed", cls: "failed" };
   if (last.status === "blocked") return { label: "blocked", cls: "warn" };
+  if (last.status === "aborted") return { label: "aborted", cls: "paused" };
   return { label: last.status, cls: "idle" };
+}
+
+function roleCost(role: RoleId): number {
+  const done = (detail.value?.roles?.[role] ?? []).reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
+  return done + (isRunning(role) ? liveUsage.value[role]?.costUsd ?? 0 : 0);
+}
+
+function isRunning(role: RoleId): boolean {
+  const attempts = detail.value?.roles?.[role] ?? [];
+  return attempts[attempts.length - 1]?.status === "running";
+}
+
+function roleTokens(role: RoleId): number {
+  let u = emptyUsage();
+  for (const a of detail.value?.roles?.[role] ?? []) u = addUsage(u, a.usage);
+  if (isRunning(role)) u = addUsage(u, liveUsage.value[role]?.usage);
+  return totalTokens(u);
+}
+
+const runTokens = computed(() => {
+  let n = totalTokens(detail.value?.totalUsage);
+  for (const r of ROLES) if (isRunning(r)) n += totalTokens(liveUsage.value[r]?.usage);
+  return n;
+});
+const runCost = computed(() => {
+  let c = detail.value?.totalCostUsd ?? 0;
+  for (const r of ROLES) if (isRunning(r)) c += liveUsage.value[r]?.costUsd ?? 0;
+  return c;
+});
+
+/** Unit Tester runs twice per cycle; show which phase its latest attempt was. */
+function rolePhase(role: RoleId): string | null {
+  if (role !== "unitTester") return null;
+  const attempts = detail.value?.roles?.unitTester ?? [];
+  const last = attempts[attempts.length - 1];
+  if (last?.state === "unit_tests_red_running") return "red";
+  if (last?.state === "unit_tests_green_running") return "green";
+  return null;
 }
 
 const artifactsForRole = computed(() => {
@@ -55,14 +120,7 @@ const orchestratorArtifacts = computed(() => {
   return detail.value.artifacts.filter((a) => a.owner === "orchestrator");
 });
 
-const stateCls = computed((): string => {
-  const s = detail.value?.state;
-  if (!s) return "idle";
-  if (s === "done") return "done";
-  if (s === "failed") return "failed";
-  if (s.startsWith("awaiting_")) return "awaiting";
-  return "running";
-});
+const stateCls = computed((): string => (detail.value ? stateChipClass(detail.value.state) : "idle"));
 
 watch(artifactsForRole, (a) => {
   if (a.length > 0 && !a.find((x) => x.relative === activeArtifact.value)) {
@@ -84,6 +142,9 @@ async function abort() { await api.abort(props.id); await refresh(); }
         <h2 style="margin:0">{{ detail.label }}</h2>
         <span class="chip" :class="stateCls">{{ detail.state }}</span>
         <span v-if="detail.source.kind === 'manual'" class="chip">{{ detail.source.type }}</span>
+        <span class="chip" title="Total SDK cost for this run">{{ formatUsd(runCost) }}</span>
+        <span class="chip" title="Total tokens (input + output + cache read + cache write)">{{ formatTokens(runTokens) }} tokens</span>
+        <span v-if="detail.fixIterations" class="chip" title="Fix loops so far">fix loops: {{ detail.fixIterations }}</span>
         <div class="spacer" />
         <a v-if="detail.source.kind === 'jira'" :href="detail.source.ticketUrl" target="_blank" rel="noreferrer">Open JIRA ticket ↗</a>
       </div>
@@ -102,12 +163,15 @@ async function abort() { await api.abort(props.id); await refresh(); }
           {{ repo.path }} (base: {{ repo.baseBranch }}<span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
         </div>
       </div>
-      <div v-if="detail.failureReason" class="error" style="margin-top: 8px">Failure: {{ detail.failureReason }}</div>
+      <div v-if="detail.state === 'failed' && detail.failureReason" class="error" style="margin-top: 8px; white-space: pre-wrap">Failure: {{ detail.failureReason }}</div>
+      <div v-if="detail.state === 'paused' && detail.pauseReason" class="paused-note">
+        Paused: {{ detail.pauseReason }}
+      </div>
       <div class="row" style="margin-top: 12px; gap: 6px; flex-wrap: wrap">
-        <button v-for="r in ROLES" :key="r" @click="jump(r)">Jump → {{ r }}</button>
+        <button v-for="r in ROLES" :key="r" @click="jump(r)">Jump → {{ ROLE_LABELS[r] }}</button>
         <div class="spacer" />
         <button class="warn" @click="skip" :disabled="!detail.pendingApproval">Skip gate</button>
-        <button class="danger" @click="abort">Abort</button>
+        <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused' || detail.state === 'failed'">Abort</button>
       </div>
     </div>
 
@@ -119,8 +183,11 @@ async function abort() { await api.abort(props.id); await refresh(); }
         :class="{ active: activeRole === r }"
         @click="activeRole = r"
       >
-        <span>{{ r }}</span>
-        <span class="chip" :class="roleChip(r).cls">{{ roleChip(r).label }}</span>
+        <span>{{ ROLE_LABELS[r] }}</span>
+        <span class="chip" :class="roleChip(r).cls">{{ roleChip(r).label }}<template v-if="rolePhase(r)"> · {{ rolePhase(r) }}</template></span>
+        <span v-if="roleTokens(r) > 0" class="muted mono" style="font-size: 11px" title="tokens · cost">
+          {{ formatTokens(roleTokens(r)) }} · {{ formatUsd(roleCost(r)) }}
+        </span>
       </button>
     </div>
 
@@ -133,7 +200,10 @@ async function abort() { await api.abort(props.id); await refresh(); }
 
     <div class="main">
       <section class="panel stream-panel">
-        <h3>{{ activeRole }} — stream</h3>
+        <h3>
+          {{ ROLE_LABELS[activeRole] }} — stream
+          <span class="muted mono" style="font-size: 11px; font-weight: normal">model: {{ detail.effectiveModels[activeRole] }}</span>
+        </h3>
         <RoleStream :role="activeRole" :events="events" />
       </section>
 
@@ -167,6 +237,8 @@ async function abort() { await api.abort(props.id); await refresh(); }
         </div>
       </section>
     </div>
+
+    <UsagePanel :detail="detail" :live="liveUsage" />
   </div>
 </template>
 
@@ -182,5 +254,6 @@ async function abort() { await api.abort(props.id); await refresh(); }
 .error { color: var(--danger); }
 .manual-source { background: var(--panel2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
 .manual-source p { margin: 4px 0; }
+.paused-note { margin-top: 8px; padding: 8px 12px; border: 1px dashed var(--warn); border-radius: 4px; color: var(--warn); }
 .manual-source ul { margin-top: 6px; }
 </style>

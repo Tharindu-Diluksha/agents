@@ -1,23 +1,26 @@
 import { perRepoPrDescriptionName } from "../orchestrator/artifacts.js";
 import type { RoleSpec } from "./types.js";
-import { artifactRelative, headerFor, maybeAttach, primaryRepo } from "./common.js";
+import { aiGuidelineSection, artifactRelative, BASH, headerFor, maybeAttach, orchestratorSection, primaryRepo } from "./common.js";
 
 export const prCreator: RoleSpec = {
   id: "prCreator",
+  title: "PR Creator",
   promptFile: "pr-creator.md",
   allowedTools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
   bashAllowList: [
-    /^git\s+(status|diff|log|show|branch|rev-parse|push\s+(-u\s+)?origin\s+\S+$)/,
+    BASH.gitRead,
+    BASH.gitBranchRead,
+    /^git\s+push\s+(-u\s+)?origin\s+[^\s-]\S*$/,
     /^gh\s+(auth\s+status|repo\s+view|pr\s+view\b)/,
     /^cat\s+(package\.json|\.github\/pull_request_template\.md)$/,
-    /^ls\b/,
-    /^dir\b/,
+    BASH.ls,
   ],
+  writeScope: "run",
   maxTurns: 40,
   cwdFor(record) {
     return primaryRepo(record).path;
   },
-  buildInput(record, { feedback }) {
+  buildInput(record, ctx) {
     const perRepoPaths = record.repos.map((r) => ({
       repo: r,
       file: artifactRelative(record, "prCreator", perRepoPrDescriptionName(r)),
@@ -39,6 +42,7 @@ export const prCreator: RoleSpec = {
       "4. Push the branch to `origin`.",
       "5. Compute the diff against the repo's base branch (`git diff <base>...HEAD`, `git log <base>..HEAD`).",
       "6. If `.github/pull_request_template.md` exists in that repo, honour its section headings. Otherwise use the shape in `templates/pr-description.md`.",
+      "   Include a **traceability table**: one row per acceptance criterion (AC-id) listing the unit, integration and E2E tests that cover it, taken from the test reports below.",
       "7. Write the PR description to the per-repo file listed below.",
       "",
       "## Per-repo PR description files to write",
@@ -54,11 +58,12 @@ export const prCreator: RoleSpec = {
       maybeAttach(record, "developer", "adr.md", "ADR"),
       maybeAttach(record, "developer", "impl-plan.md", "Implementation plan"),
       maybeAttach(record, "reviewer", "review-report.md", "Review report"),
-      maybeAttach(record, "tester", "test-report.md", "Test report"),
+      maybeAttach(record, "unitTester", "unit-test-report.md", "Unit test report"),
+      maybeAttach(record, "integrationTester", "integration-test-report.md", "Integration test report"),
+      maybeAttach(record, "e2eTester", "e2e-test-report.md", "E2E test report"),
+      aiGuidelineSection(record, "prCreator"),
+      orchestratorSection(ctx),
     ];
-    if (feedback) {
-      lines.push("", "## Feedback", "", feedback);
-    }
     lines.push(
       "",
       "## End-of-turn JSON block",

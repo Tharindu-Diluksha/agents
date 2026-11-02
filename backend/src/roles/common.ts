@@ -6,7 +6,8 @@ import {
   readArtifact,
   type ArtifactOwner,
 } from "../orchestrator/artifacts.js";
-import type { RepoTarget, RunRecord } from "../orchestrator/types.js";
+import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
+import type { RoleInputCtx } from "./types.js";
 
 export function artifactPath(record: RunRecord, role: ArtifactOwner, name: string): string {
   return perRoleArtifactPath(record, role, name);
@@ -63,7 +64,7 @@ export function maybeAttach(record: RunRecord, role: ArtifactOwner, name: string
  * folder, emits a per-repo bullet pointing the role at it. Returns an empty
  * string when no repo in the run has a resolved AI guideline doc.
  */
-export function aiGuidelineSection(record: RunRecord, role: "analyst" | "developer" | "reviewer"): string {
+export function aiGuidelineSection(record: RunRecord, role: RoleId): string {
   const resolved = record.repos
     .map((r) =>
       r.aiGuidelinePath && existsSync(join(r.path, r.aiGuidelinePath))
@@ -74,34 +75,91 @@ export function aiGuidelineSection(record: RunRecord, role: "analyst" | "develop
   if (resolved.length === 0) return "";
 
   const bullets = resolved.map((r) => `- \`${r.path}\` → \`${r.guideline}\``).join("\n");
-  const header = "## AI guideline";
-
-  if (role === "analyst") {
-    return [
-      "",
-      header,
-      "",
+  const instruction: Record<RoleId, string> = {
+    analyst:
       "Repo(s) in this run ship with an AI guideline document the feature doc must respect. Read the relevant pages and cite them.",
-      bullets,
-      "",
-    ].join("\n");
-  }
-  if (role === "developer") {
-    return [
-      "",
-      header,
-      "",
+    developer:
       "Consult the AI guideline document for each repo you touch, when it affects architecture or interface decisions; cite the specific page(s) in the ADR when it influenced a choice.",
-      bullets,
-      "",
-    ].join("\n");
-  }
-  return [
-    "",
-    header,
-    "",
-    "Review the changes against the AI guideline document(s) below. Cite the specific guideline page per finding where applicable.",
-    bullets,
-    "",
-  ].join("\n");
+    unitTester:
+      "Follow the testing conventions in the AI guideline document (file layout, naming, mocking rules) for each repo you add tests to.",
+    integrationTester:
+      "Follow the testing conventions in the AI guideline document (file layout, naming, fixtures, what may be mocked) for each repo you add tests to.",
+    reviewer:
+      "Review the changes against the AI guideline document(s) below. Cite the specific guideline page per finding where applicable.",
+    e2eTester:
+      "Follow any end-to-end or UI testing conventions in the AI guideline document (selectors, fixtures, test data).",
+    prCreator: "If the AI guideline document prescribes PR conventions (title format, sections), follow them.",
+  };
+  return ["", "## AI guideline", "", instruction[role], bullets, ""].join("\n");
 }
+
+/** Renders the orchestrator signal, hand-back notes, and user feedback for a role prompt. */
+export function orchestratorSection(ctx: RoleInputCtx): string {
+  const lines: string[] = [];
+  if (ctx.signal === "orchestrator_restart") {
+    lines.push(
+      "",
+      "## Orchestrator signal",
+      "",
+      "The orchestrator restarted while you were working. Check what you already did (git status/log, the artifacts in the run folder) and continue from there. Do not redo completed work.",
+    );
+  } else if (ctx.signal === "review_fixes_required") {
+    lines.push(
+      "",
+      "## Orchestrator signal",
+      "",
+      "The review report attached above must be addressed. Fix every BLOCKER/HIGH finding and justify any MED you choose not to act on.",
+    );
+  } else if (ctx.signal === "create_suite_approved") {
+    lines.push(
+      "",
+      "## Orchestrator signal",
+      "",
+      "The user APPROVED Playwright suite creation. Install Playwright, scaffold the config, add tests, and run them.",
+    );
+  }
+  if (ctx.handoff) {
+    lines.push(
+      "",
+      `## Handed back by ${ctx.handoff.from}`,
+      "",
+      ctx.handoff.notes?.trim() || "(no notes — see that role's report attached above)",
+    );
+  }
+  if (ctx.feedback && ctx.feedback.trim()) {
+    lines.push("", "## Feedback from the user", "", ctx.feedback.trim());
+  }
+  return lines.join("\n");
+}
+
+/** Shared instruction: acceptance-criteria IDs carried through every downstream artifact. */
+export const TRACEABILITY_NOTE =
+  "The feature doc numbers its acceptance criteria `AC-1`, `AC-2`, …. Reference those IDs in test names or descriptions and in your report, so every criterion can be traced to the tests that cover it.";
+
+/** Fenced JSON example for the end-of-turn block. */
+export function endOfTurnExample(title: string, example: unknown): string {
+  return ["", `## End-of-turn JSON block (${title})`, "", "```json", JSON.stringify(example, null, 2), "```"].join("\n");
+}
+
+/**
+ * Building blocks for per-role Bash allowlists. Each regex is checked against a
+ * single command — `sdk/permissions.ts` rejects chaining, pipes, redirects and
+ * substitution before these run.
+ */
+export const BASH = {
+  gitRead: /^git\s+(status|diff|log|show|rev-parse)(\s|$)/,
+  /** Listing branches only — no create/delete/rename. */
+  gitBranchRead: /^git\s+branch(\s+(--show-current|--list|-a|-r|-v|-vv))*\s*$/,
+  gitCommit: /^git\s+(add|commit)(\s|$)/,
+  /** Discard local edits to files (never switches branches). */
+  gitRestore: /^git\s+(restore\s|checkout\s+--\s)/,
+  gitStash: /^git\s+stash(\s|$)/,
+  catPackageJson: /^cat\s+package\.json$/,
+  ls: /^(ls|dir)(\s|$)/,
+  /** Unit test runners, typecheck and lint (npm/pnpm scripts named test*, typecheck*, lint*). */
+  testRunners: [
+    /^npm\s+(test|run\s+(test|typecheck|lint)(:\S+)?)(\s|$)/,
+    /^pnpm\s+(test|run\s+(test|typecheck|lint)(:\S+)?)(\s|$)/,
+    /^npx\s+(vitest|jest|tsc)(\s|$)/,
+  ],
+} as const;

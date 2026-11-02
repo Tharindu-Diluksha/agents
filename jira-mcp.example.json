@@ -1,0 +1,14 @@
+{
+  "serverName": "atlassian-local",
+  "server": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"]
+  },
+  "tools": {
+    "getIssue": "getJiraIssue",
+    "searchIssues": "searchJiraIssuesUsingJql",
+    "addComment": "addCommentToJiraIssue",
+    "readOnlyExtras": ["getAccessibleAtlassianResources", "atlassianUserInfo"]
+  }
+}

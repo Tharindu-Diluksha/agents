@@ -5,13 +5,14 @@ import { config } from "../config.js";
 import { emit } from "../events.js";
 import { log } from "../log.js";
 import { getSessionId, saveSessionId } from "../orchestrator/sessionStore.js";
-import type { RoleId, RoleOutput } from "../orchestrator/types.js";
+import { ROLES, type AttemptUsage, type RoleId, type RoleOutput } from "../orchestrator/types.js";
 import type { RoleSpec } from "../roles/types.js";
+import { evaluateToolUse, GATED_TOOLS, type GuardContext, type GuardDecision } from "./permissions.js";
 
 // Zod schema accepts both the preferred payloadPaths (string[]) and the legacy
 // scalar payloadPath that older role prompts may still emit. We normalize to
 // payloadPaths before handing the value out.
-const RoleOutputRawSchema = z.object({
+export const RoleOutputRawSchema = z.object({
   status: z.enum(["done", "awaiting_approval", "blocked"]),
   artifacts: z.array(z.string()).default([]),
   approvalRequest: z
@@ -24,13 +25,14 @@ const RoleOutputRawSchema = z.object({
     .nullable(),
   handoff: z
     .object({
-      nextRole: z.enum(["analyst", "developer", "reviewer", "tester", "prCreator"]),
+      // "tester" is accepted for older prompts and normalized to "e2eTester".
+      nextRole: z.enum([...ROLES, "tester"]),
       notes: z.string().optional(),
     })
     .nullable(),
 });
 
-function normalizeRoleOutput(raw: z.infer<typeof RoleOutputRawSchema>): RoleOutput {
+export function normalizeRoleOutput(raw: z.infer<typeof RoleOutputRawSchema>): RoleOutput {
   const ar = raw.approvalRequest;
   return {
     status: raw.status,
@@ -47,7 +49,12 @@ function normalizeRoleOutput(raw: z.infer<typeof RoleOutputRawSchema>): RoleOutp
               : [],
         }
       : null,
-    handoff: raw.handoff,
+    handoff: raw.handoff
+      ? {
+          nextRole: raw.handoff.nextRole === "tester" ? "e2eTester" : raw.handoff.nextRole,
+          notes: raw.handoff.notes,
+        }
+      : null,
   };
 }
 
@@ -58,8 +65,19 @@ export interface RunRoleAgentArgs {
   systemPrompt: string;
   userPrompt: string;
   cwd: string;
+  model: string;
   /** Absolute paths of all repos in the run. Bash commands can be prefixed with `cd <any-of-these> && ` and still pass the allowlist. */
   repoPaths: string[];
+  /** Absolute directories file-writing tools may write into. */
+  writeRoots: string[];
+  /** Effective Bash allowlist (static role list plus any state-dependent extras). */
+  bashAllowList: RegExp[];
+  /** Read-only MCP tools added for this run (e.g. JIRA), auto-approved. */
+  extraTools?: string[];
+  /** MCP servers to attach (keyed by server name). */
+  mcpServers?: Record<string, unknown>;
+  /** Hard USD cap for this one SDK query (remaining run budget). Omit for no cap. */
+  maxBudgetUsd?: number;
   signal?: AbortSignal;
 }
 
@@ -67,6 +85,15 @@ export interface RunRoleAgentResult {
   sessionId?: string;
   output?: RoleOutput;
   parseError?: string;
+  metrics?: RunMetrics;
+}
+
+export interface RunMetrics {
+  costUsd: number;
+  numTurns: number;
+  usage: AttemptUsage;
+  /** SDK result subtype, e.g. `success`, `error_max_turns`, `error_max_budget_usd`. */
+  resultSubtype?: string;
 }
 
 /**
@@ -75,85 +102,151 @@ export interface RunRoleAgentResult {
  *
  * On re-run (sessionStore returns an existing id for runId+role), the SDK is
  * invoked with `resume: <sessionId>` so the role sees its prior attempt.
+ *
+ * Tool permissions: only the role's tools are made available (`tools`), only
+ * read-only tools are auto-approved (`allowedTools`), and every gated tool
+ * (Bash, Write, Edit, …) goes through `evaluateToolUse` twice — in a
+ * `PreToolUse` hook, which runs before any allow rule, and in `canUseTool`.
  */
 export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgentResult> {
-  const { runId, role, spec, systemPrompt, userPrompt, cwd, repoPaths, signal } = args;
+  const { runId, role, spec, systemPrompt, userPrompt, cwd, repoPaths, writeRoots, signal } = args;
   const existingSessionId = getSessionId(runId, role);
 
-  const canUseTool = buildCanUseTool(runId, role, spec, repoPaths);
+  const allowedTools = [...spec.allowedTools, ...(args.extraTools ?? [])];
+  const guardCtx: GuardContext = {
+    allowedTools,
+    bashAllowList: args.bashAllowList,
+    repoPaths,
+    writeRoots,
+    cwd,
+  };
+  const guard = (toolName: string, input: Record<string, unknown>): GuardDecision => {
+    const decision = evaluateToolUse(toolName, input, guardCtx);
+    if (!decision.allow) reportDenied(runId, role, toolName, input, decision.reason);
+    return decision;
+  };
+
+  const builtinTools = allowedTools.filter((t) => !t.startsWith("mcp__"));
+  const autoApproved = allowedTools.filter((t) => !GATED_TOOLS.has(t));
 
   const options: Record<string, unknown> = {
     cwd,
-    model: config.model,
+    model: args.model,
     systemPrompt,
-    allowedTools: spec.allowedTools,
+    tools: builtinTools,
+    allowedTools: autoApproved,
     permissionMode: "default",
-    canUseTool,
+    canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+      const d = guard(toolName, input);
+      return d.allow
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: d.reason };
+    },
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            async (hookInput: { tool_name?: string; tool_input?: unknown }) => {
+              const name = String(hookInput.tool_name ?? "");
+              const input = (hookInput.tool_input ?? {}) as Record<string, unknown>;
+              const d = guard(name, input);
+              if (d.allow) return { continue: true };
+              return {
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: d.reason,
+                },
+              };
+            },
+          ],
+        },
+      ],
+    },
     maxTurns: spec.maxTurns ?? 40,
     settingSources: [],
   };
+  if (args.maxBudgetUsd !== undefined) options.maxBudgetUsd = args.maxBudgetUsd;
+  if (args.mcpServers && Object.keys(args.mcpServers).length > 0) options.mcpServers = args.mcpServers;
   if (existingSessionId) options.resume = existingSessionId;
 
-  log.info("sdk.run_role", { runId, role, resume: Boolean(existingSessionId), cwd });
+  log.info("sdk.run_role", { runId, role, model: args.model, resume: Boolean(existingSessionId), cwd });
 
   let capturedSessionId: string | undefined = existingSessionId ?? undefined;
   const assistantText: string[] = [];
-  const toolCallsById = new Map<string, { name: string }>();
+  const metrics: RunMetrics = {
+    costUsd: 0,
+    numTurns: 0,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+  };
 
   const maxAttempts = Math.max(1, config.retry.maxAttempts);
   let attemptErr: unknown = null;
 
+  // Live usage for the in-flight SDK attempt, keyed by API message id. The
+  // SDK's final `result` message is authoritative and replaces it.
+  const liveUsage = new Map<string, AttemptUsage>();
+  const emitUsage = () => {
+    const total = { ...metrics.usage };
+    for (const u of liveUsage.values()) addUsage(total, u);
+    emit({ type: "role.usage", runId, role, usage: total, costUsd: metrics.costUsd, final: false });
+  };
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     assistantText.length = 0;
-    toolCallsById.clear();
+    liveUsage.clear();
     attemptErr = null;
 
     // After a retry, resume whatever session id we captured on the aborted attempt.
     if (attempt > 1 && capturedSessionId) {
-      (options as Record<string, unknown>).resume = capturedSessionId;
+      options.resume = capturedSessionId;
     }
+
+    // A fresh controller per attempt, linked to the caller's signal, so abort
+    // actually stops the SDK subprocess instead of just abandoning it.
+    const sdkAbort = new AbortController();
+    const onAbort = () => sdkAbort.abort();
+    if (signal) {
+      if (signal.aborted) throw new Error("aborted");
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    options.abortController = sdkAbort;
 
     try {
       const q = query({ prompt: userPrompt, options: options as never });
-
-      const abortPromise = signal
-        ? new Promise<never>((_, reject) => {
-            const onAbort = () => reject(new Error("aborted"));
-            if (signal.aborted) onAbort();
-            else signal.addEventListener("abort", onAbort, { once: true });
-          })
-        : null;
-
-      const iterator = (async () => {
-        for await (const message of q as AsyncIterable<Record<string, unknown>>) {
-          handleMessage(runId, role, message, {
-            onSessionId: (id) => {
-              capturedSessionId = id;
-            },
-            onAssistantText: (t) => assistantText.push(t),
-            onToolCall: (id, name) => toolCallsById.set(id, { name }),
-            onToolResult: () => {
-              /* already emitted inside handleMessage */
-            },
-          });
-        }
-      })();
-
-      await (abortPromise ? Promise.race([iterator, abortPromise]) : iterator);
+      for await (const message of q as AsyncIterable<Record<string, unknown>>) {
+        handleMessage(runId, role, message, {
+          onSessionId: (id) => {
+            capturedSessionId = id;
+          },
+          onAssistantText: (t) => assistantText.push(t),
+          onAssistantUsage: (id, u) => {
+            liveUsage.set(id, usageFromApi(u));
+            emitUsage();
+          },
+          onResult: (r) => {
+            addResultMetrics(metrics, r);
+            liveUsage.clear();
+            emit({ type: "role.usage", runId, role, usage: { ...metrics.usage }, costUsd: metrics.costUsd, final: true });
+          },
+        });
+      }
+      if (signal?.aborted) throw new Error("aborted");
       attemptErr = null;
       break;
     } catch (err) {
-      attemptErr = err;
-      const classification = classifyError(err);
+      attemptErr = signal?.aborted ? new Error("aborted") : err;
+      const classification = classifyError(attemptErr);
       if (!classification.transient || attempt === maxAttempts) {
         log.error("sdk.run_failed", {
           runId,
           role,
           attempt,
           transient: classification.transient,
-          err: err instanceof Error ? err.message : String(err),
+          err: attemptErr instanceof Error ? attemptErr.message : String(attemptErr),
         });
-        throw err;
+        if (capturedSessionId) saveSessionId(runId, role, capturedSessionId);
+        throw attemptErr;
       }
       const wait = config.retry.initialDelayMs * Math.pow(2, attempt - 1);
       log.warn("sdk.retry", { runId, role, attempt, waitMs: wait, reason: classification.reason });
@@ -165,6 +258,8 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
         text: `[orchestrator] transient error on attempt ${attempt}/${maxAttempts}, retrying in ${wait}ms: ${classification.reason}`,
       });
       await delay(wait);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -176,23 +271,72 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
   const parsed = parseTerminalJsonBlock(full);
 
   if (!parsed.ok) {
-    return { sessionId: capturedSessionId, parseError: parsed.reason };
+    const hint = limitHint(metrics.resultSubtype);
+    return { sessionId: capturedSessionId, parseError: parsed.reason + hint, metrics };
   }
   const validated = RoleOutputRawSchema.safeParse(parsed.value);
   if (!validated.success) {
     return {
       sessionId: capturedSessionId,
       parseError: `terminal JSON did not match schema: ${validated.error.message}`,
+      metrics,
     };
   }
-  return { sessionId: capturedSessionId, output: normalizeRoleOutput(validated.data) };
+  return { sessionId: capturedSessionId, output: normalizeRoleOutput(validated.data), metrics };
+}
+
+function limitHint(subtype: string | undefined): string {
+  if (subtype === "error_max_turns") return " (the role hit its maxTurns limit before finishing)";
+  if (subtype === "error_max_budget_usd") return " (the role hit the run's cost budget before finishing)";
+  return "";
+}
+
+function reportDenied(runId: string, role: RoleId, toolName: string, input: Record<string, unknown>, reason: string): void {
+  const detail =
+    toolName === "Bash"
+      ? truncate(String(input.command ?? ""), 160)
+      : truncate(String(input.file_path ?? input.notebook_path ?? ""), 160);
+  log.warn("sdk.tool_denied", { runId, role, tool: toolName, detail, reason });
+  emit({
+    type: "role.message",
+    runId,
+    role,
+    subtype: "system",
+    text: `[orchestrator] blocked ${toolName}${detail ? ` (${detail})` : ""}: ${reason}`,
+  });
+}
+
+export function addResultMetrics(metrics: RunMetrics, r: Record<string, unknown>): void {
+  if (typeof r.total_cost_usd === "number") metrics.costUsd += r.total_cost_usd;
+  if (typeof r.num_turns === "number") metrics.numTurns += r.num_turns;
+  if (typeof r.subtype === "string") metrics.resultSubtype = r.subtype;
+  addUsage(metrics.usage, usageFromApi((r.usage ?? {}) as Record<string, unknown>));
+}
+
+/** Converts the API's snake_case usage block to AttemptUsage. */
+export function usageFromApi(u: Record<string, unknown>): AttemptUsage {
+  const n = (k: string) => (typeof u[k] === "number" ? (u[k] as number) : 0);
+  return {
+    inputTokens: n("input_tokens"),
+    outputTokens: n("output_tokens"),
+    cacheReadInputTokens: n("cache_read_input_tokens"),
+    cacheCreationInputTokens: n("cache_creation_input_tokens"),
+  };
+}
+
+function addUsage(into: AttemptUsage, u: AttemptUsage): void {
+  into.inputTokens += u.inputTokens;
+  into.outputTokens += u.outputTokens;
+  into.cacheReadInputTokens += u.cacheReadInputTokens;
+  into.cacheCreationInputTokens += u.cacheCreationInputTokens;
 }
 
 interface MessageHandlers {
   onSessionId: (id: string) => void;
   onAssistantText: (text: string) => void;
-  onToolCall: (id: string, name: string) => void;
-  onToolResult: () => void;
+  /** Per-API-call usage; the SDK may emit several assistant messages for one call, sharing its id. */
+  onAssistantUsage: (messageId: string, usage: Record<string, unknown>) => void;
+  onResult: (result: Record<string, unknown>) => void;
 }
 
 function handleMessage(
@@ -212,10 +356,15 @@ function handleMessage(
   if (type === "result") {
     const sid = (message as { session_id?: string }).session_id;
     if (sid) handlers.onSessionId(sid);
+    handlers.onResult(message);
     return;
   }
 
   if (type === "assistant") {
+    const apiMessage = (message as { message?: { id?: unknown; usage?: unknown } }).message;
+    if (apiMessage?.usage && typeof apiMessage.usage === "object") {
+      handlers.onAssistantUsage(String(apiMessage.id ?? message.uuid ?? ""), apiMessage.usage as Record<string, unknown>);
+    }
     const inner = (message as { message?: { content?: unknown } }).message?.content ?? message.content;
     const blocks = Array.isArray(inner) ? inner : [];
     for (const block of blocks) {
@@ -226,7 +375,6 @@ function handleMessage(
       } else if (b.type === "tool_use") {
         const id = String(b.id ?? "");
         const name = String(b.name ?? "");
-        handlers.onToolCall(id, name);
         emit({
           type: "role.tool_call",
           runId,
@@ -258,7 +406,6 @@ function handleMessage(
           isError,
           summary,
         });
-        handlers.onToolResult();
       }
     }
     return;
@@ -272,7 +419,7 @@ function truncate(s: string, max: number): string {
 
 type ParseResult = { ok: true; value: unknown } | { ok: false; reason: string };
 
-function parseTerminalJsonBlock(text: string): ParseResult {
+export function parseTerminalJsonBlock(text: string): ParseResult {
   if (!text.trim()) return { ok: false, reason: "assistant produced no text" };
 
   const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
@@ -300,16 +447,7 @@ function parseTerminalJsonBlock(text: string): ParseResult {
   return { ok: false, reason: "no fenced JSON block with a `status` field was found at the end of the role's response" };
 }
 
-type CanUseToolFn = (
-  toolName: string,
-  input: Record<string, unknown>,
-  options?: unknown,
-) => Promise<
-  | { behavior: "allow"; updatedInput?: Record<string, unknown> }
-  | { behavior: "deny"; message: string }
->;
-
-function classifyError(err: unknown): { transient: boolean; reason: string } {
+export function classifyError(err: unknown): { transient: boolean; reason: string } {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
   if (lower === "aborted") return { transient: false, reason: "aborted" };
@@ -330,48 +468,4 @@ function classifyError(err: unknown): { transient: boolean; reason: string } {
   }
   // Default: treat unknown errors as non-transient so we don't retry a bug.
   return { transient: false, reason: truncate(msg, 100) };
-}
-
-function buildCanUseTool(runId: string, role: RoleId, spec: RoleSpec, repoPaths: string[]): CanUseToolFn {
-  const bashAllow = spec.bashAllowList ?? [];
-  return async (toolName, input) => {
-    if (toolName === "Bash") {
-      const cmd = typeof input.command === "string" ? input.command.trim() : "";
-      const effective = stripCdPrefix(cmd, repoPaths);
-      const ok = bashAllow.some((re) => re.test(effective));
-      if (!ok) {
-        const msg = `Bash command not allowed for ${role}: ${truncate(cmd, 160)}`;
-        log.warn("sdk.bash_denied", { runId, role, cmd: truncate(cmd, 160) });
-        emit({
-          type: "role.message",
-          runId,
-          role,
-          text: `[orchestrator] blocked Bash command (not in ${role} allowlist): ${truncate(cmd, 160)}`,
-          subtype: "system",
-        });
-        return { behavior: "deny", message: msg };
-      }
-    }
-    return { behavior: "allow" };
-  };
-}
-
-/**
- * If the command is of the form `cd <path> && <rest>` where <path> matches one
- * of the run's repo paths (bare, quoted with ', or quoted with "), returns the
- * `<rest>` portion so the per-role allowlist can validate it. Otherwise
- * returns the command unchanged.
- */
-function stripCdPrefix(cmd: string, repoPaths: string[]): string {
-  const match = cmd.match(/^cd\s+((?:"[^"]+")|(?:'[^']+')|(?:\S+))\s*&&\s*(.+)$/);
-  if (!match) return cmd;
-  const rawPath = match[1]!;
-  const rest = match[2]!.trim();
-  const unquoted = rawPath.replace(/^['"]|['"]$/g, "");
-  const normalized = unquoted.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  for (const repo of repoPaths) {
-    const norm = repo.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    if (norm === normalized) return rest;
-  }
-  return cmd;
 }
