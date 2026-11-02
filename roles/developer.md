@@ -33,6 +33,8 @@ The Unit Tester has already committed failing unit tests for the plan.
 3. Commit incrementally with meaningful messages. Each commit should keep the suite green.
 4. Run the full unit suite plus typecheck/lint one last time, then emit `status: "done"`. The orchestrator sends your change to the Unit Tester (verification), the Integration Tester, and then the Code Reviewer.
 
+If the orchestrator signals **merge conflicts** (it merged the latest base into your branch before opening the PR), resolve the conflict markers in the listed files, run the tests, then `git add` them and finish the merge with `git commit --no-edit`. Never abort the merge.
+
 If a review report is attached because fixes were required, address every BLOCKER/HIGH finding and justify any MED you choose not to act on in a short note at the top of your reply. If a unit, integration or E2E test report classifies an **app-bug**, fix that bug specifically.
 
 ## Terminal JSON block (mandatory)

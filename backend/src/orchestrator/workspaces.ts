@@ -12,6 +12,8 @@ import {
   switchWorktreeBranch,
 } from "../external/git.js";
 import { repoSlug } from "./artifacts.js";
+import { allocatePortBlock } from "./ports.js";
+import { listRuns } from "./runStore.js";
 import type { RepoTarget, RunRecord } from "./types.js";
 
 /*
@@ -53,6 +55,13 @@ export function worktreePathFor(record: RunRecord, index: number): string {
 
 export type ProgressFn = (message: string) => void;
 
+let portLock: Promise<unknown> = Promise.resolve();
+function withPortLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = portLock.then(fn, fn);
+  portLock = next.catch(() => undefined);
+  return next;
+}
+
 /**
  * Ensures every repo of a worktree-mode run has its worktree. Idempotent:
  * an existing worktree at the expected path is reused. Mutates `record.repos`
@@ -60,6 +69,17 @@ export type ProgressFn = (message: string) => void;
  */
 export async function prepareWorkspaces(record: RunRecord, progress: ProgressFn): Promise<void> {
   if (!usesWorktrees(record)) return;
+  if (!record.ports) {
+    // Serialised: two runs preparing at once must not both pick the same free block.
+    const ports = await withPortLock(async () => {
+      // A run holds its block from allocation until its worktrees are removed (ports → null).
+      const others = listRuns().filter((r) => r.runId !== record.runId && r.ports);
+      const block = await allocatePortBlock(others);
+      record.ports = block; // claim before releasing the lock
+      return block;
+    });
+    progress(`reserved ports ${ports.base}–${ports.base + ports.count - 1} for this run`);
+  }
   for (let i = 0; i < record.repos.length; i++) {
     const repo = record.repos[i]!;
     const target = worktreePathFor(record, i);
@@ -160,5 +180,7 @@ export async function removeWorkspaces(record: RunRecord, force: boolean): Promi
       results.push({ repoPath: repo.path, workPath, removed: false, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  // The port block is held only while the run has worktrees.
+  if (!record.repos.some((r) => r.workPath)) record.ports = null;
   return results;
 }

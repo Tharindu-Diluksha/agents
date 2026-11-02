@@ -14,7 +14,10 @@ import { createPr } from "../external/gh.js";
 import { clearApproval, requestApproval } from "./approvals.js";
 import { artifactPath, perRepoPrDescriptionName, readArtifact, runDir, toRelative } from "./artifacts.js";
 import { Semaphore } from "./concurrency.js";
-import { prepareWorkspaces, removeWorkspaces, setFeatureBranch, workDir, type RemoveResult } from "./workspaces.js";
+import { runEnv } from "./ports.js";
+import { refreshOverlaps } from "./overlaps.js";
+import { syncWithBase } from "../external/git.js";
+import { prepareWorkspaces, removeWorkspaces, setFeatureBranch, usesWorktrees, workDir, type RemoveResult } from "./workspaces.js";
 import { proposeBranches, readProposedBranches, writeProposedBranches, type BranchProposal } from "./branches.js";
 import { latestAttempt, loadRun, saveRun, startAttempt, totalCostUsd, transition } from "./runStore.js";
 import type { ApprovalAction, PendingApproval, RoleAttempt, RoleId, RoleOutput, RunRecord, RunState } from "./types.js";
@@ -123,6 +126,7 @@ export async function removeRunWorkspaces(runId: string, force: boolean): Promis
   }
   const results = await removeWorkspaces(record, force);
   saveRun(record);
+  await refreshOverlaps(record);
   for (const r of results) {
     log.info("workflow.worktree_removed", { runId, repo: r.repoPath, workPath: r.workPath, removed: r.removed, err: r.error });
   }
@@ -300,7 +304,57 @@ function startRole(
   }
   const state = roleOrState in roleRegistry ? runningStateFor(record, role) : (roleOrState as RunState);
   goTo(record, state, reason);
+  if (role === "prCreator" && usesWorktrees(record) && config.syncBaseBeforePr) {
+    void syncThenStartPrCreator(record, ctx, opts);
+    return;
+  }
   void runRoleAsync(record, role, ctx, opts);
+}
+
+/**
+ * Before the PR Creator: bring each repo's branch up to date with its base
+ * (rebase if never pushed, merge otherwise). Conflicts go back to the
+ * Developer (a fix loop) with the merge left in progress; the change then
+ * goes through verification again before returning here.
+ */
+async function syncThenStartPrCreator(record: RunRecord, ctx: RoleInputCtx, opts: { ignoreBudget?: boolean }): Promise<void> {
+  const notes: string[] = [];
+  const conflicts: string[] = [];
+  for (const repo of record.repos) {
+    if (!repo.workPath || !repo.branch) continue;
+    const where = `\`${repo.workPath}\` (${repo.branch})`;
+    try {
+      const r = await syncWithBase(repo.workPath, repo.baseBranch, { fetch: config.worktree.fetchBase });
+      if (r.ref) repo.baseRef = r.ref;
+      if (r.status === "rebased" || r.status === "merged") {
+        notes.push(
+          `${where} was ${r.status} onto \`${r.ref}\` (${r.behind} new upstream commit(s)). The test reports predate this; say so in the PR's test plan.`,
+        );
+      } else if (r.status === "conflicts") {
+        conflicts.push(`- ${where}, merging \`${r.ref}\`: ${r.files.map((f) => `\`${f}\``).join(", ")}`);
+      } else if (r.status === "skipped") {
+        notes.push(`${where} could not be synced with \`${repo.baseBranch}\`: ${r.reason}. The PR may need a rebase.`);
+      }
+    } catch (err) {
+      notes.push(`${where} could not be synced with \`${repo.baseBranch}\`: ${errMsg(err)}. The PR may need a rebase.`);
+    }
+  }
+  saveRun(record);
+  // The user may have aborted or jumped elsewhere meanwhile.
+  if (record.state !== "pr_creator_running") return;
+  for (const n of notes) systemMessage(record, "prCreator", n);
+
+  if (conflicts.length > 0) {
+    systemMessage(record, "prCreator", `merge conflicts with the latest base:\n${conflicts.join("\n")}`);
+    if (!admitFixLoop(record, "merge conflicts with the latest base")) return;
+    startRole(record, "developer_implementing", "merge conflicts with the latest base", {
+      signal: "merge_conflicts",
+      notes: conflicts,
+    });
+    return;
+  }
+  void refreshOverlaps(record);
+  await runRoleAsync(record, "prCreator", { ...ctx, notes: [...(ctx.notes ?? []), ...notes] }, opts);
 }
 
 /**
@@ -504,6 +558,7 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
     }
     log.info("workflow.pr_run_complete", { runId: record.runId, summary: results.map((r) => `${r.repoPath}: ${r.url}`).join("\n") });
     goTo(record, "done", "PRs created");
+    void refreshOverlaps(record); // a finished run no longer overlaps anyone
   },
 
 };
@@ -597,6 +652,7 @@ async function runRoleAsync(
       bashAllowList: [...spec.bashAllowList, ...(spec.extraBashAllowList?.(record) ?? [])],
       extraTools: jira.tools,
       mcpServers: jira.mcpServers,
+      env: runEnv(record),
       maxBudgetUsd,
       signal: ctrl.signal,
     });
@@ -630,6 +686,7 @@ async function runRoleAsync(
     saveRun(record);
     emit({ type: "role.ended", runId, role, status: outcome.output.status, artifacts: outcome.output.artifacts });
 
+    if (spec.needsWorkspace) void refreshOverlaps(record);
     await handleRoleOutput(record, role, outcome.output);
   } catch (err) {
     attempt.endedAt = new Date().toISOString();

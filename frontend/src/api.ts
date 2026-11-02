@@ -1,4 +1,4 @@
-import type { JiraMcpTestResult, RoleId, RunDetail, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
+import type { JiraMcpTestResult, Overlap, RoleId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -17,6 +17,12 @@ export const api = {
   },
   async getConfig(): Promise<ServerConfig> {
     return json(await fetch("/api/config"));
+  },
+  async getEvents(id: string, limit = 5000): Promise<{ events: RunEvent[] }> {
+    return json(await fetch(`/api/runs/${id}/events?limit=${limit}`));
+  },
+  async refreshOverlaps(id: string): Promise<{ overlaps: Overlap[] }> {
+    return json(await fetch(`/api/runs/${id}/overlaps/refresh`, { method: "POST" }));
   },
   async getSlots(): Promise<Slots> {
     return json(await fetch("/api/slots"));

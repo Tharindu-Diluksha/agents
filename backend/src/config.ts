@@ -77,5 +77,17 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  /**
+   * Each run with a worktree reserves a block of PORT_BLOCK_SIZE ports from
+   * [PORT_RANGE_START, PORT_RANGE_END) for its dev/test servers, so parallel
+   * E2E/integration runs don't collide.
+   */
+  ports: {
+    rangeStart: num("PORT_RANGE_START", 41000),
+    rangeEnd: num("PORT_RANGE_END", 42000),
+    blockSize: Math.max(1, num("PORT_BLOCK_SIZE", 10)),
+  },
+  /** Bring the branch up to date with its base (rebase, or merge once pushed) before the PR Creator runs. */
+  syncBaseBeforePr: (process.env.SYNC_BASE_BEFORE_PR ?? "true").toLowerCase() !== "false",
   branchNameTemplate: process.env.BRANCH_NAME_TEMPLATE ?? "feature/{ticket}-{slug}",
 } as const;

@@ -155,3 +155,69 @@ export async function removeWorktree(repoPath: string, worktreePath: string, for
 function normalize(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
+
+// ---------------------------------------------------------------------------
+// Change tracking and syncing with the base branch
+// ---------------------------------------------------------------------------
+
+/**
+ * Files this worktree changes relative to where it branched from `baseRef`:
+ * committed and uncommitted changes to tracked files, plus untracked files.
+ */
+export async function changedFiles(worktreePath: string, baseRef: string): Promise<string[]> {
+  const mb = await runCmd("git", ["merge-base", baseRef, "HEAD"], worktreePath);
+  if (mb.code !== 0) throw new Error(`git merge-base ${baseRef} HEAD failed: ${mb.stderr.trim()}`);
+  const diff = await runCmd("git", ["diff", "--name-only", mb.stdout.trim()], worktreePath);
+  if (diff.code !== 0) throw new Error(`git diff failed: ${diff.stderr.trim()}`);
+  const untracked = await runCmd("git", ["ls-files", "--others", "--exclude-standard"], worktreePath);
+  const files = [...diff.stdout.split("\n"), ...(untracked.code === 0 ? untracked.stdout.split("\n") : [])]
+    .map((f) => f.trim())
+    .filter(Boolean);
+  return [...new Set(files)].sort();
+}
+
+export type SyncResult =
+  | { status: "up_to_date"; ref: string }
+  | { status: "rebased" | "merged"; ref: string; behind: number }
+  | { status: "conflicts"; ref: string; behind: number; files: string[] }
+  | { status: "skipped"; ref?: string; reason: string };
+
+/**
+ * Brings the worktree's branch up to date with the latest base.
+ * - Not yet pushed: rebase onto the base (clean history).
+ * - Already pushed (origin/<branch> exists): merge, so the next push needs no force.
+ * - If a rebase conflicts it is aborted and a merge is attempted instead; a
+ *   conflicting merge is LEFT IN PROGRESS (conflict markers in the files) for
+ *   the Developer to resolve and commit.
+ */
+export async function syncWithBase(worktreePath: string, baseBranch: string, opts: { fetch: boolean }): Promise<SyncResult> {
+  const { ref, fetchError } = await resolveBaseRef(worktreePath, baseBranch, opts.fetch);
+  const branch = (await runCmd("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], worktreePath)).stdout.trim();
+  if (!branch) return { status: "skipped", ref, reason: "worktree is not on a branch" };
+
+  const upToDate = await runCmd("git", ["merge-base", "--is-ancestor", ref, "HEAD"], worktreePath);
+  if (upToDate.code === 0) return { status: "up_to_date", ref };
+
+  const dirty = await runCmd("git", ["status", "--porcelain", "--untracked-files=no"], worktreePath);
+  if (dirty.stdout.trim()) return { status: "skipped", ref, reason: "uncommitted changes in the worktree" };
+
+  const behind = Number((await runCmd("git", ["rev-list", "--count", `HEAD..${ref}`], worktreePath)).stdout.trim()) || 0;
+  const pushed = (await runCmd("git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], worktreePath)).code === 0;
+
+  if (!pushed) {
+    const rebase = await runCmd("git", ["rebase", ref], worktreePath);
+    if (rebase.code === 0) return { status: "rebased", ref, behind };
+    await runCmd("git", ["rebase", "--abort"], worktreePath);
+  }
+
+  const merge = await runCmd("git", ["merge", "--no-edit", ref], worktreePath);
+  if (merge.code === 0) return { status: "merged", ref, behind };
+  const conflicted = await runCmd("git", ["diff", "--name-only", "--diff-filter=U"], worktreePath);
+  const files = conflicted.stdout.split("\n").map((f) => f.trim()).filter(Boolean);
+  if (files.length === 0) {
+    await runCmd("git", ["merge", "--abort"], worktreePath);
+    const why = (merge.stderr.trim() || merge.stdout.trim()).split("\n").slice(-3).join(" ");
+    return { status: "skipped", ref, reason: `merge failed: ${why}${fetchError ? ` (fetch: ${fetchError})` : ""}` };
+  }
+  return { status: "conflicts", ref, behind, files };
+}

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { config, paths } from "../config.js";
-import { emit } from "../events.js";
+import { emit, readEventLog } from "../events.js";
+import { refreshOverlaps } from "../orchestrator/overlaps.js";
 import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
@@ -90,6 +91,8 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     reviewAutoRoute: config.reviewAutoRoute,
     jira: describeJiraMcp(),
     maxConcurrentRoles: config.maxConcurrentRoles,
+    ports: config.ports,
+    syncBaseBeforePr: config.syncBaseBeforePr,
     worktreesDir: paths.worktreesDir,
   }));
 
@@ -181,6 +184,9 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       pendingApproval: r.pendingApproval,
       totalCostUsd: totalCostUsd(r),
       totalUsage: usageTotals(r),
+      overlaps: r.overlaps ?? [],
+      pauseReason: r.pauseReason,
+      failureReason: r.failureReason,
     }));
     return { runs };
   });
@@ -257,6 +263,27 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       reply.code(400).send({ error: "jump_failed", detail: errMsg(err) });
     }
+  });
+
+  /** Persisted event stream (runs/<id>/events.jsonl), oldest first, for replay on page load. */
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/runs/:id/events", async (req, reply) => {
+    if (!loadRun(req.params.id)) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 5000) || 5000, 1), 20000);
+    return { events: readEventLog(req.params.id, limit) };
+  });
+
+  /** Re-computes file overlaps with other active runs on the same repos. */
+  app.post<{ Params: { id: string } }>("/api/runs/:id/overlaps/refresh", async (req, reply) => {
+    const record = loadRun(req.params.id);
+    if (!record) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    await refreshOverlaps(record);
+    return { overlaps: record.overlaps ?? [] };
   });
 
   app.post<{ Params: { id: string } }>("/api/runs/:id/workspaces/remove", async (req, reply) => {

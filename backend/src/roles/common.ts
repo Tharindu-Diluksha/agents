@@ -9,6 +9,7 @@ import {
 import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
 import type { RoleInputCtx } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
+import { portsPromptLines } from "../orchestrator/ports.js";
 
 export function artifactPath(record: RunRecord, role: ArtifactOwner, name: string): string {
   return perRoleArtifactPath(record, role, name);
@@ -37,6 +38,7 @@ export function headerFor(record: RunRecord, roleHuman: string): string {
       "Each path above is **this run's own git worktree** of the repo. Work only there — other runs may be using the original checkout or their own worktrees in parallel.",
     );
   }
+  lines.push(...portsPromptLines(record));
   if (record.repos.length > 1) {
     lines.push("");
     lines.push(
@@ -125,6 +127,16 @@ export function orchestratorSection(ctx: RoleInputCtx): string {
       "",
       "The user APPROVED Playwright suite creation. Install Playwright, scaffold the config, add tests, and run them.",
     );
+  } else if (ctx.signal === "merge_conflicts") {
+    lines.push(
+      "",
+      "## Orchestrator signal",
+      "",
+      "Before opening the PR, the orchestrator merged the latest base branch into your branch and git reported **conflicts** in the files listed below. The merge is still in progress: resolve the conflict markers so both sides' intent is kept, run the tests, then `git add` the files and conclude the merge with `git commit --no-edit`. Do not abort the merge. When the suite is green, emit `status: \"done\"`; the change is verified again before the PR.",
+    );
+  }
+  if (ctx.notes && ctx.notes.length > 0) {
+    lines.push("", "## Orchestrator notes", "", ...ctx.notes.map((n) => (n.startsWith("- ") ? n : `- ${n}`)));
   }
   if (ctx.handoff) {
     lines.push(

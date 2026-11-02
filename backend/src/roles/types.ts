@@ -38,7 +38,9 @@ export type OrchestratorSignal =
   /** The user (or review auto-routing) sent the review report back for fixes. */
   | "review_fixes_required"
   /** The user approved creating a Playwright suite. */
-  | "create_suite_approved";
+  | "create_suite_approved"
+  /** Merging the latest base into the branch left conflicts for the Developer to resolve. */
+  | "merge_conflicts";
 
 export interface RoleInputCtx {
   signal?: OrchestratorSignal;
@@ -46,4 +48,6 @@ export interface RoleInputCtx {
   feedback?: string;
   /** Set when another role handed work back to this one. */
   handoff?: { from: RoleId; notes?: string };
+  /** Facts from the orchestrator itself (e.g. the branch was rebased), rendered as a list. */
+  notes?: string[];
 }

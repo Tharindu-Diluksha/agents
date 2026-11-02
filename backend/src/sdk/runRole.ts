@@ -76,6 +76,8 @@ export interface RunRoleAgentArgs {
   extraTools?: string[];
   /** MCP servers to attach (keyed by server name). */
   mcpServers?: Record<string, unknown>;
+  /** Extra environment for the session and every command it runs (e.g. the run's ports). */
+  env?: Record<string, string>;
   /** Hard USD cap for this one SDK query (remaining run budget). Omit for no cap. */
   maxBudgetUsd?: number;
   signal?: AbortSignal;
@@ -168,6 +170,7 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
   };
   if (args.maxBudgetUsd !== undefined) options.maxBudgetUsd = args.maxBudgetUsd;
   if (args.mcpServers && Object.keys(args.mcpServers).length > 0) options.mcpServers = args.mcpServers;
+  if (args.env && Object.keys(args.env).length > 0) options.env = { ...process.env, ...args.env };
   if (existingSessionId) options.resume = existingSessionId;
 
   log.info("sdk.run_role", { runId, role, model: args.model, resume: Boolean(existingSessionId), cwd });

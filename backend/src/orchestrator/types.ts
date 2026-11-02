@@ -152,4 +152,22 @@ export interface RunRecord {
    * `in-place`: roles work in the user's checkout (runs created before worktrees).
    */
   workspace?: "worktree" | "in-place";
+  /** Ports reserved for this run's dev/test servers while its worktrees exist. */
+  ports?: PortBlock | null;
+  /** Last computed file overlaps with other active runs. */
+  overlaps?: Overlap[];
+}
+
+/** Files changed by this run that another active run on the same repo also changes. */
+export interface Overlap {
+  otherRunId: string;
+  otherLabel: string;
+  repoPath: string;
+  files: string[];
+}
+
+/** Ports reserved for one run: [base, base + count). Passed to role sessions as env vars. */
+export interface PortBlock {
+  base: number;
+  count: number;
 }

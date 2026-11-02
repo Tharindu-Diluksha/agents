@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { api } from "../api.js";
 import { useRunSocket } from "../composables/useRunSocket.js";
 import {
@@ -42,7 +43,28 @@ onMounted(refresh);
 // Live token totals for the attempt currently running in each role.
 const liveUsage = ref<Partial<Record<RoleId, { usage: AttemptUsage; costUsd: number }>>>({});
 
-useRunSocket(props.id, (ev) => {
+const MAX_EVENTS = 5000;
+
+/*
+ * Stream history: live WebSocket events are buffered until the persisted log
+ * (runs/<id>/events.jsonl) has loaded, then merged by `seq` so nothing is
+ * shown twice or lost in between.
+ */
+let historyLoaded = false;
+let lastSeq = 0;
+const buffered: RunEvent[] = [];
+const historyNote = ref<string | null>(null);
+
+function pushEvent(ev: RunEvent) {
+  if (ev.seq !== undefined) {
+    if (ev.seq <= lastSeq) return;
+    lastSeq = ev.seq;
+  }
+  events.value.push(ev);
+  if (events.value.length > MAX_EVENTS) events.value.splice(0, events.value.length - MAX_EVENTS);
+}
+
+function applyLive(ev: RunEvent) {
   if (ev.type === "role.usage") {
     // Not added to the stream; the final numbers land in run.json on role.ended.
     liveUsage.value = { ...liveUsage.value, [ev.role]: { usage: ev.usage, costUsd: ev.costUsd } };
@@ -53,12 +75,47 @@ useRunSocket(props.id, (ev) => {
     const { [ev.role]: _drop, ...rest } = liveUsage.value;
     liveUsage.value = rest;
   }
-  events.value.push(ev);
-  if (events.value.length > 2000) events.value.splice(0, events.value.length - 2000);
-  if (ev.type === "run.transitioned" || ev.type === "role.ended" || ev.type === "approval.requested" || ev.type === "approval.resolved" || ev.type === "run.failed") {
+  pushEvent(ev);
+  if (
+    ev.type === "run.transitioned" ||
+    ev.type === "role.ended" ||
+    ev.type === "approval.requested" ||
+    ev.type === "approval.resolved" ||
+    ev.type === "run.failed" ||
+    ev.type === "run.overlaps"
+  ) {
     refresh();
   }
+}
+
+useRunSocket(props.id, (ev) => {
+  if (!historyLoaded) buffered.push(ev);
+  else applyLive(ev);
 });
+
+onMounted(async () => {
+  try {
+    const { events: history } = await api.getEvents(props.id, MAX_EVENTS);
+    for (const ev of history) if (ev.type !== "role.usage") pushEvent(ev);
+    if (history.length >= MAX_EVENTS) historyNote.value = `Showing the last ${MAX_EVENTS} events.`;
+  } catch {
+    historyNote.value = "Could not load earlier events; showing live events only.";
+  }
+  historyLoaded = true;
+  for (const ev of buffered.splice(0)) applyLive(ev);
+});
+
+// File overlaps with other active runs on the same repos.
+const overlapBusy = ref(false);
+async function recheckOverlaps() {
+  overlapBusy.value = true;
+  try {
+    await api.refreshOverlaps(props.id);
+    await refresh();
+  } finally {
+    overlapBusy.value = false;
+  }
+}
 
 function roleChip(role: RoleId): { label: string; cls: string } {
   const attempts = detail.value?.roles?.[role] ?? [];
@@ -190,6 +247,24 @@ async function removeWorktrees() {
         <div v-if="detail.workspace === 'in-place'" style="font-size: 11px">This run predates per-run worktrees and works in the checkout directly.</div>
       </div>
       <div v-if="detail.state === 'failed' && detail.failureReason" class="error" style="margin-top: 8px; white-space: pre-wrap">Failure: {{ detail.failureReason }}</div>
+      <div v-if="detail.ports" class="muted mono" style="font-size: 11px; margin-top: 2px">
+        ports: {{ detail.ports.base }}–{{ detail.ports.base + detail.ports.count - 1 }}
+      </div>
+      <div v-if="detail.overlaps && detail.overlaps.length" class="overlap-note">
+        <div class="row" style="gap: 8px">
+          <strong>Overlaps with other active runs</strong>
+          <div class="spacer" />
+          <button @click="recheckOverlaps" :disabled="overlapBusy">{{ overlapBusy ? "Checking…" : "Re-check" }}</button>
+        </div>
+        <div v-for="o in detail.overlaps" :key="o.otherRunId + o.repoPath" style="margin-top: 4px">
+          <RouterLink :to="`/runs/${o.otherRunId}`">{{ o.otherLabel }}</RouterLink>
+          <span class="muted"> also changes in <span class="mono">{{ o.repoPath }}</span>:&nbsp;</span>
+          <span class="mono">{{ o.files.join(", ") }}</span>
+        </div>
+        <div class="muted" style="font-size: 11px; margin-top: 4px">
+          Whichever PR merges second will likely conflict. Consider finishing one run first; the orchestrator also syncs with the base before each PR.
+        </div>
+      </div>
       <div v-if="worktreeMsg" class="muted" style="margin-top: 8px; font-size: 12px">{{ worktreeMsg }}</div>
       <div v-if="detail.state === 'paused' && detail.pauseReason" class="paused-note">
         Paused: {{ detail.pauseReason }}
@@ -228,6 +303,7 @@ async function removeWorktrees() {
 
     <div class="main">
       <section class="panel stream-panel">
+        <p v-if="historyNote" class="muted" style="font-size: 11px; margin: 0 0 4px">{{ historyNote }}</p>
         <h3>
           {{ ROLE_LABELS[activeRole] }} — stream
           <span class="muted mono" style="font-size: 11px; font-weight: normal">model: {{ detail.effectiveModels[activeRole] }}</span>
@@ -282,6 +358,7 @@ async function removeWorktrees() {
 .error { color: var(--danger); }
 .manual-source { background: var(--panel2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
 .manual-source p { margin: 4px 0; }
+.overlap-note { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 4px; font-size: 13px; }
 .paused-note { margin-top: 8px; padding: 8px 12px; border: 1px dashed var(--warn); border-radius: 4px; color: var(--warn); }
 .manual-source ul { margin-top: 6px; }
 </style>

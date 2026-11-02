@@ -52,6 +52,7 @@ const calls: Array<{
   mcpServers: string[];
   cwd: string;
   repoPaths: string[];
+  env: Record<string, string>;
 }> = [];
 
 vi.mock("../src/sdk/runRole.js", () => ({
@@ -62,6 +63,7 @@ vi.mock("../src/sdk/runRole.js", () => ({
       runId: args.runId,
       cwd: args.cwd,
       repoPaths: args.repoPaths,
+      env: args.env ?? {},
       role: args.role,
       state,
       prompt: args.userPrompt,
@@ -88,6 +90,9 @@ const mutableConfig = config as unknown as {
   maxConcurrentRoles: number;
 };
 const repoPath = join(tmp, "app");
+
+// The orchestrator's own merges/rebases need a git identity on any machine.
+Object.assign(process.env, { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" });
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
@@ -541,6 +546,149 @@ describe("parallel runs", () => {
     await settle(runId, isGateOrEnd);
     expect(calls.find((c) => c.role === "developer")!.cwd).toBe(repoPath);
     expect(existsSync(join(tmp, "worktrees", runId))).toBe(false);
+  });
+});
+
+describe("parallel runs: ports, overlaps, sync before PR", () => {
+  const wt = (runId: string) => join(tmp, "worktrees", runId, "app");
+  const happy: Script = (role, state, args) => happyScript(args.runId)(role, state, args);
+
+  async function toBranchGate(runId: string): Promise<void> {
+    await workflow.startRun(runId);
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve");
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_branch_names");
+  }
+
+  it("reserves a distinct port block per run and passes it to role sessions", async () => {
+    const a = newRun();
+    const b = newRun();
+    script = happy;
+    await Promise.all([toBranchGate(a), toBranchGate(b)]);
+    const pa = loadRun(a)!.ports!;
+    const pb = loadRun(b)!.ports!;
+    expect(pa.count).toBe(config.ports.blockSize);
+    expect(pa.base).not.toBe(pb.base);
+    const dev = calls.find((c) => c.runId === a && c.role === "developer")!;
+    expect(dev.env).toMatchObject({ ORCH_RUN_ID: a, PORT: String(pa.base), E2E_BASE_URL: `http://localhost:${pa.base}` });
+    expect(dev.prompt).toContain(`Ports reserved for this run: ${pa.base}–${pa.base + pa.count - 1}`);
+    // The Analyst runs before any worktree exists, so it has no ports yet.
+    expect(calls.find((c) => c.runId === a && c.role === "analyst")!.env).toEqual({ ORCH_RUN_ID: a });
+
+    workflow.abortRun(a);
+    await workflow.removeRunWorkspaces(a, true);
+    expect(loadRun(a)!.ports).toBeNull();
+  });
+
+  it("flags files changed by two active runs on both runs", async () => {
+    const a = newRun();
+    const b = newRun();
+    // Each Developer edits README.md (shared) plus its own file.
+    script = (role, state, args) => {
+      if (role === "developer" && state === "developer_implementing") {
+        writeFileSync(join(args.cwd, "README.md"), `changed by ${args.runId}\n`);
+        writeFileSync(join(args.cwd, `${args.runId}.txt`), "x\n");
+      }
+      return happy(role, state, args);
+    };
+    await Promise.all([toBranchGate(a), toBranchGate(b)]);
+    await Promise.all([workflow.resumeAfterApproval(a, "approve"), workflow.resumeAfterApproval(b, "approve")]);
+    await settle(a, isGateOrEnd);
+    await settle(b, isGateOrEnd);
+    // Refreshes also run in the background after each role; await one to avoid timing flakes.
+    const { refreshOverlaps } = await import("../src/orchestrator/overlaps.js");
+    await refreshOverlaps(loadRun(a)!);
+
+    expect(loadRun(a)!.overlaps).toEqual([{ otherRunId: b, otherLabel: b, repoPath, files: ["README.md"] }]);
+    expect(loadRun(b)!.overlaps).toEqual([{ otherRunId: a, otherLabel: a, repoPath, files: ["README.md"] }]);
+
+    // Once one run's worktree is gone, neither run reports the overlap.
+    workflow.abortRun(b);
+    await workflow.removeRunWorkspaces(b, true);
+    expect(loadRun(a)!.overlaps).toEqual([]);
+  });
+
+  it("rebases onto new upstream commits before the PR Creator and tells it so", async () => {
+    const runId = newRun();
+    script = (role, state, args) => {
+      if (role === "developer" && state === "developer_implementing") {
+        writeFileSync(join(args.cwd, `${runId}.txt`), "feature\n");
+        git(args.cwd, "add", ".");
+        git(args.cwd, "commit", "-qm", "feature");
+        // Meanwhile someone lands a change on main.
+        writeFileSync(join(repoPath, `upstream-${runId}.txt`), "u\n");
+        git(repoPath, "add", `upstream-${runId}.txt`);
+        git(repoPath, "commit", "-qm", "upstream");
+      }
+      return happy(role, state, args);
+    };
+    await toBranchGate(runId);
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_review_decision");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_pr_approval");
+
+    const pr = calls.find((c) => c.runId === runId && c.role === "prCreator")!;
+    expect(pr.prompt).toContain("## Orchestrator notes");
+    expect(pr.prompt).toMatch(/was rebased onto `main` \(1 new upstream commit/);
+    expect(git(wt(runId), "log", "-1", "--format=%s", "HEAD~1")).toBe("upstream");
+  });
+
+  it("sends merge conflicts with the base back to the Developer, then re-verifies before the PR", async () => {
+    const runId = newRun();
+    const shared = `conflict-${runId}.txt`;
+    writeFileSync(join(repoPath, shared), "base\n");
+    git(repoPath, "add", shared);
+    git(repoPath, "commit", "-qm", "add shared file");
+
+    let devRuns = 0;
+    script = (role, state, args) => {
+      if (role === "developer" && state === "developer_implementing") {
+        devRuns++;
+        if (devRuns === 1) {
+          writeFileSync(join(args.cwd, shared), "feature\n");
+          git(args.cwd, "commit", "-qam", "feature edit");
+          writeFileSync(join(repoPath, shared), "upstream\n");
+          git(repoPath, "commit", "-qam", "upstream edit");
+        } else {
+          // Resolve and conclude the merge the orchestrator left in progress.
+          expect(readFileSync(join(args.cwd, shared), "utf8")).toContain("<<<<<<<");
+          writeFileSync(join(args.cwd, shared), "feature + upstream\n");
+          git(args.cwd, "add", shared);
+          git(args.cwd, "commit", "--no-edit", "-q");
+        }
+      }
+      return happy(role, state, args);
+    };
+    await toBranchGate(runId);
+    await workflow.resumeAfterApproval(runId, "approve");
+    await settle(runId, isGateOrEnd); // review gate
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_review_decision"); // back through verification
+    expect(devRuns).toBe(2);
+    const fix = calls.filter((c) => c.runId === runId && c.role === "developer")[2]!;
+    expect(fix.prompt).toContain("git reported **conflicts**");
+    expect(fix.prompt).toContain(`\`${shared}\``);
+    expect(loadRun(runId)!.fixIterations).toBe(1);
+
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_pr_approval");
+    expect(readFileSync(join(wt(runId), shared), "utf8")).toBe("feature + upstream\n");
+  });
+
+  it("replays the persisted event stream with sequence numbers", async () => {
+    const runId = newRun();
+    script = happy;
+    await workflow.startRun(runId);
+    await settle(runId, isGateOrEnd);
+    const { readEventLog } = await import("../src/events.js");
+    const log = readEventLog(runId);
+    expect(log.map((e) => e.seq)).toEqual(log.map((_, i) => i + 1));
+    expect(log.map((e) => e.type)).toEqual(
+      expect.arrayContaining(["run.transitioned", "role.started", "role.ended", "approval.requested"]),
+    );
   });
 });
 
