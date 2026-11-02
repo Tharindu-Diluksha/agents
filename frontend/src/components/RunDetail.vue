@@ -2,7 +2,21 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { api } from "../api.js";
 import { useRunSocket } from "../composables/useRunSocket.js";
-import { formatUsd, ROLE_LABELS, ROLES, stateChipClass, type RoleId, type RunDetail, type RunEvent } from "../types.js";
+import {
+  addUsage,
+  emptyUsage,
+  formatTokens,
+  formatUsd,
+  ROLE_LABELS,
+  ROLES,
+  stateChipClass,
+  totalTokens,
+  type AttemptUsage,
+  type RoleId,
+  type RunDetail,
+  type RunEvent,
+} from "../types.js";
+import UsagePanel from "./UsagePanel.vue";
 import RoleStream from "./RoleStream.vue";
 import ArtifactPreview from "./ArtifactPreview.vue";
 import ApprovalCard from "./ApprovalCard.vue";
@@ -25,7 +39,19 @@ async function refresh() {
 
 onMounted(refresh);
 
+// Live token totals for the attempt currently running in each role.
+const liveUsage = ref<Partial<Record<RoleId, { usage: AttemptUsage; costUsd: number }>>>({});
+
 useRunSocket(props.id, (ev) => {
+  if (ev.type === "role.usage") {
+    // Not added to the stream; the final numbers land in run.json on role.ended.
+    liveUsage.value = { ...liveUsage.value, [ev.role]: { usage: ev.usage, costUsd: ev.costUsd } };
+    return;
+  }
+  if (ev.type === "role.started" || ev.type === "role.ended") {
+    const { [ev.role]: _drop, ...rest } = liveUsage.value;
+    liveUsage.value = rest;
+  }
   events.value.push(ev);
   if (events.value.length > 2000) events.value.splice(0, events.value.length - 2000);
   if (ev.type === "run.transitioned" || ev.type === "role.ended" || ev.type === "approval.requested" || ev.type === "approval.resolved" || ev.type === "run.failed") {
@@ -47,8 +73,32 @@ function roleChip(role: RoleId): { label: string; cls: string } {
 }
 
 function roleCost(role: RoleId): number {
-  return (detail.value?.roles?.[role] ?? []).reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
+  const done = (detail.value?.roles?.[role] ?? []).reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
+  return done + (isRunning(role) ? liveUsage.value[role]?.costUsd ?? 0 : 0);
 }
+
+function isRunning(role: RoleId): boolean {
+  const attempts = detail.value?.roles?.[role] ?? [];
+  return attempts[attempts.length - 1]?.status === "running";
+}
+
+function roleTokens(role: RoleId): number {
+  let u = emptyUsage();
+  for (const a of detail.value?.roles?.[role] ?? []) u = addUsage(u, a.usage);
+  if (isRunning(role)) u = addUsage(u, liveUsage.value[role]?.usage);
+  return totalTokens(u);
+}
+
+const runTokens = computed(() => {
+  let n = totalTokens(detail.value?.totalUsage);
+  for (const r of ROLES) if (isRunning(r)) n += totalTokens(liveUsage.value[r]?.usage);
+  return n;
+});
+const runCost = computed(() => {
+  let c = detail.value?.totalCostUsd ?? 0;
+  for (const r of ROLES) if (isRunning(r)) c += liveUsage.value[r]?.costUsd ?? 0;
+  return c;
+});
 
 /** Unit Tester runs twice per cycle; show which phase its latest attempt was. */
 function rolePhase(role: RoleId): string | null {
@@ -92,7 +142,8 @@ async function abort() { await api.abort(props.id); await refresh(); }
         <h2 style="margin:0">{{ detail.label }}</h2>
         <span class="chip" :class="stateCls">{{ detail.state }}</span>
         <span v-if="detail.source.kind === 'manual'" class="chip">{{ detail.source.type }}</span>
-        <span class="chip" title="Total SDK cost for this run">{{ formatUsd(detail.totalCostUsd) }}</span>
+        <span class="chip" title="Total SDK cost for this run">{{ formatUsd(runCost) }}</span>
+        <span class="chip" title="Total tokens (input + output + cache read + cache write)">{{ formatTokens(runTokens) }} tokens</span>
         <span v-if="detail.fixIterations" class="chip" title="Fix loops so far">fix loops: {{ detail.fixIterations }}</span>
         <div class="spacer" />
         <a v-if="detail.source.kind === 'jira'" :href="detail.source.ticketUrl" target="_blank" rel="noreferrer">Open JIRA ticket ↗</a>
@@ -120,7 +171,7 @@ async function abort() { await api.abort(props.id); await refresh(); }
         <button v-for="r in ROLES" :key="r" @click="jump(r)">Jump → {{ ROLE_LABELS[r] }}</button>
         <div class="spacer" />
         <button class="warn" @click="skip" :disabled="!detail.pendingApproval">Skip gate</button>
-        <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused'">Abort</button>
+        <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused' || detail.state === 'failed'">Abort</button>
       </div>
     </div>
 
@@ -134,7 +185,9 @@ async function abort() { await api.abort(props.id); await refresh(); }
       >
         <span>{{ ROLE_LABELS[r] }}</span>
         <span class="chip" :class="roleChip(r).cls">{{ roleChip(r).label }}<template v-if="rolePhase(r)"> · {{ rolePhase(r) }}</template></span>
-        <span v-if="roleCost(r) > 0" class="muted mono" style="font-size: 11px">{{ formatUsd(roleCost(r)) }}</span>
+        <span v-if="roleTokens(r) > 0" class="muted mono" style="font-size: 11px" title="tokens · cost">
+          {{ formatTokens(roleTokens(r)) }} · {{ formatUsd(roleCost(r)) }}
+        </span>
       </button>
     </div>
 
@@ -184,6 +237,8 @@ async function abort() { await api.abort(props.id); await refresh(); }
         </div>
       </section>
     </div>
+
+    <UsagePanel :detail="detail" :live="liveUsage" />
   </div>
 </template>
 

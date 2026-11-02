@@ -7,7 +7,9 @@ import { config } from "../config.js";
 import { emit } from "../events.js";
 import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
-import { createRun, listRuns, loadRun, totalCostUsd } from "../orchestrator/runStore.js";
+import { testJiraMcp } from "../external/jiraMcp.js";
+import { describeJiraMcp } from "../external/jiraMcpConfig.js";
+import { createRun, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
 import { abortRun, jumpToRole, resumeAfterApproval, skipCurrent, startRun } from "../orchestrator/workflow.js";
 
@@ -73,7 +75,11 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     maxFixIterations: config.maxFixIterations,
     maxRunCostUsd: config.maxRunCostUsd,
     reviewAutoRoute: config.reviewAutoRoute,
+    jira: describeJiraMcp(),
   }));
+
+  /** Connects to the configured JIRA MCP server and reports status and tools. */
+  app.post("/api/jira/test", async () => testJiraMcp());
 
   app.post("/api/runs", async (req, reply) => {
     const parsed = LaunchBody.safeParse(req.body);
@@ -85,6 +91,17 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     if (missing) {
       reply.code(400).send({ error: "repo_not_found", repoPath: missing.path });
       return;
+    }
+
+    if (parsed.data.source.kind === "jira") {
+      const jira = describeJiraMcp();
+      if (!jira.configured) {
+        reply.code(400).send({
+          error: "jira_mcp_not_configured",
+          detail: jira.error ?? "Configure a JIRA MCP server (jira-mcp.json or JIRA_MCP_* env vars) or use a manual description.",
+        });
+        return;
+      }
     }
 
     let label: string;
@@ -141,6 +158,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       updatedAt: r.updatedAt,
       pendingApproval: r.pendingApproval,
       totalCostUsd: totalCostUsd(r),
+      totalUsage: usageTotals(r),
     }));
     return { runs };
   });
@@ -154,6 +172,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     return {
       ...record,
       totalCostUsd: totalCostUsd(record),
+      totalUsage: usageTotals(record),
       effectiveModels: Object.fromEntries(ROLES.map((r) => [r, record.models?.[r] || config.models[r]])),
       artifacts: listArtifactsForRun(record).map((a) => ({ owner: a.owner, name: a.name, relative: a.relative })),
     };

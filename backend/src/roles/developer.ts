@@ -22,7 +22,9 @@ export const developer: RoleSpec = {
   id: "developer",
   title: "Developer",
   promptFile: "developer.md",
-  allowedTools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "mcp__atlassian-local__getJiraIssue"],
+  allowedTools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+  // May read the ticket for context on JIRA-sourced runs.
+  jiraAccess: "issue",
   bashAllowList: [
     BASH.gitRead,
     BASH.gitBranchRead,

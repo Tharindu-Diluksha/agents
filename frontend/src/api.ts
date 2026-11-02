@@ -1,4 +1,4 @@
-import type { RoleId, RunDetail, RunSource, RunSummary, ServerConfig } from "./types.js";
+import type { JiraMcpTestResult, RoleId, RunDetail, RunSource, RunSummary, ServerConfig } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -17,6 +17,9 @@ export const api = {
   },
   async getConfig(): Promise<ServerConfig> {
     return json(await fetch("/api/config"));
+  },
+  async testJira(): Promise<JiraMcpTestResult> {
+    return json(await fetch("/api/jira/test", { method: "POST" }));
   },
   async launchRun(input: {
     source: RunSource;

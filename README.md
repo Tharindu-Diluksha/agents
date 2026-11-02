@@ -32,7 +32,20 @@ Each role can run on its own model:
 - `CLAUDE_MODEL_<ROLE>` — per-role default (`ANALYST`, `DEVELOPER`, `UNIT_TESTER`, `INTEGRATION_TESTER`, `REVIEWER`, `E2E_TESTER`, `PR_CREATOR`).
 - Launch dialog → "Models per role" — overrides for a single run.
 
-The run page shows the model and SDK-reported cost per role, and the total cost per run.
+## Token usage
+
+The run page has a **Token usage** table: per role, the model, number of attempts, input, output, cache-read and cache-write tokens, total tokens and cost, plus a run total. A running role's numbers update live. The role tabs and the run list show token and cost totals too.
+
+## JIRA MCP server
+
+Only needed for runs launched from a JIRA ticket. Configure it either way:
+
+- **File**: copy `jira-mcp.example.json` to `jira-mcp.json` (gitignored) and edit it. Changes apply without a restart. `JIRA_MCP_CONFIG` can point to a different file.
+- **Env vars**: `JIRA_MCP_COMMAND` + `JIRA_MCP_ARGS` (stdio), or `JIRA_MCP_URL` + `JIRA_MCP_TRANSPORT` + `JIRA_MCP_HEADERS` (http/sse). See `.env.example`.
+
+`server` uses the same shape as a Claude Code `.mcp.json` entry. Strings can reference env vars as `${NAME}`, so tokens can stay in `.env`. If your server's tool names differ from Atlassian's (`getJiraIssue`, `searchJiraIssuesUsingJql`, `addCommentToJiraIssue`), set them under `tools` (or `JIRA_MCP_TOOL_*`).
+
+The launch dialog's JIRA tab shows the configured server and has a **Test connection** button that reports the connection status and whether the configured tools exist. The Analyst gets the read tools, the Developer can fetch the issue, and only the orchestrator can post a comment, after you approve it. Manual-description runs never get JIRA access.
 
 ## Guard rails
 

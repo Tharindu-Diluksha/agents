@@ -3,7 +3,7 @@ import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useRunsStore } from "../stores/runs.js";
 import LaunchRunDialog from "./LaunchRunDialog.vue";
-import { formatUsd, stateChipClass } from "../types.js";
+import { formatTokens, formatUsd, stateChipClass, totalTokens } from "../types.js";
 
 const store = useRunsStore();
 const router = useRouter();
@@ -38,7 +38,7 @@ function onLaunched(runId: string) {
           <th>Source</th>
           <th>State</th>
           <th>Repos</th>
-          <th>Cost</th>
+          <th>Usage</th>
           <th>Updated</th>
         </tr>
       </thead>
@@ -54,7 +54,12 @@ function onLaunched(runId: string) {
           <td class="mono muted">
             <div v-for="repo in r.repos" :key="repo.path">{{ repo.path }}</div>
           </td>
-          <td class="muted mono">{{ formatUsd(r.totalCostUsd) }}</td>
+          <td class="muted mono">
+            <div>{{ formatUsd(r.totalCostUsd) }}</div>
+            <div style="font-size: 11px" :title="`in ${r.totalUsage?.inputTokens ?? 0} · out ${r.totalUsage?.outputTokens ?? 0} · cache read ${r.totalUsage?.cacheReadInputTokens ?? 0} · cache write ${r.totalUsage?.cacheCreationInputTokens ?? 0}`">
+              {{ formatTokens(totalTokens(r.totalUsage)) }} tok
+            </div>
+          </td>
           <td class="muted">{{ new Date(r.updatedAt).toLocaleString() }}</td>
         </tr>
       </tbody>

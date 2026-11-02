@@ -95,6 +95,14 @@ export interface RunSummary {
   updatedAt: string;
   pendingApproval: PendingApproval | null;
   totalCostUsd: number;
+  totalUsage: AttemptUsage;
+}
+
+export interface AttemptUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
 }
 
 export type AttemptStatus = "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
@@ -109,6 +117,7 @@ export interface RoleAttempt {
   model?: string;
   costUsd?: number;
   numTurns?: number;
+  usage?: AttemptUsage;
 }
 
 export interface RunDetail extends RunSummary {
@@ -132,8 +141,29 @@ export type RunEvent =
   | { type: "role.tool_call"; runId: string; role: RoleId; name: string; input: unknown; toolUseId: string }
   | { type: "role.tool_result"; runId: string; role: RoleId; toolUseId: string; isError: boolean; summary: string }
   | { type: "role.ended"; runId: string; role: RoleId; status: AttemptStatus; artifacts: string[] }
+  | { type: "role.usage"; runId: string; role: RoleId; usage: AttemptUsage; costUsd: number; final: boolean }
   | { type: "approval.requested"; runId: string; role: RoleId; action: string; summary: string; payloadPaths: string[] }
   | { type: "approval.resolved"; runId: string; role: RoleId; action: string; decision: "approve" | "reject" | "edit" | "skip" };
+
+export interface JiraMcpSummary {
+  configured: boolean;
+  error?: string;
+  serverName?: string;
+  transport?: "stdio" | "http" | "sse";
+  target?: string;
+  source?: string;
+  tools?: { getIssue: string; searchIssues: string | null; addComment: string; readOnlyExtras: string[] };
+}
+
+export interface JiraMcpTestResult {
+  ok: boolean;
+  serverName?: string;
+  status?: string;
+  toolsFound: string[];
+  toolsMissing: string[];
+  serverTools: string[];
+  error?: string;
+}
 
 export interface ServerConfig {
   roles: RoleId[];
@@ -141,6 +171,7 @@ export interface ServerConfig {
   maxFixIterations: number;
   maxRunCostUsd: number;
   reviewAutoRoute: boolean;
+  jira: JiraMcpSummary;
 }
 
 export function stateChipClass(state: RunState): string {
@@ -154,4 +185,31 @@ export function stateChipClass(state: RunState): string {
 
 export function formatUsd(n: number | undefined): string {
   return `$${(n ?? 0).toFixed(2)}`;
+}
+
+export function emptyUsage(): AttemptUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+}
+
+export function addUsage(a: AttemptUsage, b: AttemptUsage | undefined): AttemptUsage {
+  if (!b) return a;
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+  };
+}
+
+/** All tokens processed: uncached input + cache reads + cache writes + output. */
+export function totalTokens(u: AttemptUsage | undefined): number {
+  if (!u) return 0;
+  return u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens;
+}
+
+export function formatTokens(n: number | undefined): string {
+  const v = n ?? 0;
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1)}k`;
+  return String(v);
 }

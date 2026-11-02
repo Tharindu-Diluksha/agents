@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config.js";
-import type { RepoTarget, RoleAttempt, RoleId, RunRecord, RunSource, RunState } from "./types.js";
+import type { AttemptUsage, RepoTarget, RoleAttempt, RoleId, RunRecord, RunSource, RunState } from "./types.js";
 
 /**
  * Run records are cached in memory so every caller (routes, workflow, a
@@ -114,6 +114,22 @@ export function totalCostUsd(record: RunRecord): number {
   let total = 0;
   for (const attempts of Object.values(record.roles)) {
     for (const a of attempts ?? []) total += a.costUsd ?? 0;
+  }
+  return total;
+}
+
+/** Token usage summed over every attempt of one role, or the whole run. */
+export function usageTotals(record: RunRecord, role?: RoleId): AttemptUsage {
+  const total: AttemptUsage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+  const buckets = role ? [record.roles[role]] : Object.values(record.roles);
+  for (const attempts of buckets) {
+    for (const a of attempts ?? []) {
+      if (!a.usage) continue;
+      total.inputTokens += a.usage.inputTokens;
+      total.outputTokens += a.usage.outputTokens;
+      total.cacheReadInputTokens += a.usage.cacheReadInputTokens;
+      total.cacheCreationInputTokens += a.usage.cacheCreationInputTokens;
+    }
   }
   return total;
 }

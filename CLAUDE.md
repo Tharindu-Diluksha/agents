@@ -6,7 +6,7 @@ This file provides guidance to AI coding assistants working with code in this re
 
 A generic local orchestrator that drives seven Claude Agent SDK roles through a TDD feature-development workflow — Analyst → Developer (plan) → Unit Tester (failing tests) → Developer (implement) → Unit Tester (verify) → Integration Tester → Reviewer → E2E Tester → PR Creator, with fix loops back to the Developer — exposed through a Vue 3 UI. It is not a library — it is a long-running Fastify server plus a single-page frontend meant to run on `localhost`. Target repos and project standards docs are configured per run; the orchestrator itself has no project-specific coupling.
 
-A run can be sourced from either a JIRA ticket (via the `atlassian-local` MCP server) or a user-supplied manual description (type: `feature` | `change` | `fix`, plus title, description, acceptance criteria). The Analyst role branches on the source: for JIRA it fetches via MCP and may propose a JIRA comment; for manual it reads the description inline and skips the JIRA-comment flow.
+A run can be sourced from either a JIRA ticket (via a configurable JIRA MCP server) or a user-supplied manual description (type: `feature` | `change` | `fix`, plus title, description, acceptance criteria). The Analyst role branches on the source: for JIRA it fetches via MCP and may propose a JIRA comment; for manual it reads the description inline and skips the JIRA-comment flow.
 
 ## Common commands
 
@@ -96,14 +96,17 @@ The orchestrator supports an optional per-repo AI guideline document. In code an
 
 ## External integrations
 
-- **JIRA**: via the `atlassian-local` MCP server. The Analyst role reads via MCP tools (`mcp__atlassian-local__getJiraIssue` etc.); the orchestrator *posts* via MCP after approval (`backend/src/external/jiraMcp.ts`).
+- **JIRA**: via an MCP server configured in `jira-mcp.json` (see `jira-mcp.example.json`; gitignored) and/or `JIRA_MCP_*` env vars — loaded by `backend/src/external/jiraMcpConfig.ts`, re-read on every use. Server name and tool names are configurable because JIRA MCP servers name their tools differently; tools are exposed as `mcp__<serverName>__<tool>`. The SDK runs with `settingSources: []`, so the server reaches a session only through the `mcpServers` option the orchestrator passes.
+  - Roles declare `jiraAccess` (`read` for the Analyst, `issue` for the Developer). `jiraToolsForRun` in `workflow.ts` adds the matching read-only tools and the server **only on JIRA-sourced runs**; manual runs never see JIRA. The add-comment tool is never given to a role.
+  - The orchestrator *posts* comments after approval (`backend/src/external/jiraMcp.ts :: postJiraComment`), in a session whose only tool is add-comment; it succeeds only if that tool returns without error, otherwise the approval gate re-opens with the error.
+  - `POST /api/jira/test` (`testJiraMcp`) attaches the server, reads the SDK `system/init` message for connection status and exposed tools, then aborts. The launch dialog shows this. Launching a JIRA run with nothing configured is rejected with 400.
 - **GitHub**: via `gh` CLI. The user must be authenticated (`gh auth status`).
 - **Target repo**: specified per-run in the launch dialog. Must be an existing checkout. Developer and tester roles run commands (e.g. `npm test`) with `cwd` set to the first repo, or `cd <repo> && …` for the others.
 
 ## Models, limits, and cost
 
 - Model per role: `config.models` (`CLAUDE_MODEL`, overridden by `CLAUDE_MODEL_<ROLE>`), overridden per run by `RunRecord.models` from the launch dialog. Each attempt records the model it used.
-- Each attempt records `costUsd`, `numTurns` and token usage from the SDK `result` message; `totalCostUsd(record)` sums them.
+- Each attempt records `costUsd`, `numTurns` and token usage (input, output, cache read, cache write) from the SDK `result` message; `totalCostUsd(record)` / `usageTotals(record, role?)` sum them. While a role runs, `runRole.ts` emits `role.usage` events with running totals built from each assistant message's API usage (deduplicated by API message id); the final event (`final: true`) carries the `result` numbers. The UI shows a per-role usage table (`frontend/src/components/UsagePanel.vue`).
 - `MAX_FIX_ITERATIONS` (default 3) caps fix loops; `MAX_RUN_COST_USD` (default off) pauses before the next role once spent. Both pause the run (`state: "paused"`, `pauseReason`). "Jump → role" resumes, resets the fix counter and ignores the budget for that one role.
 - `REVIEW_AUTO_ROUTE=true` decides the review gate from `review-findings.json`.
 - A role that reports `blocked` without a hand-off pauses the run (fix the cause, then Jump); errors and invalid output fail it.

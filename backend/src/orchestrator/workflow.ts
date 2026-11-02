@@ -7,7 +7,8 @@ import { runRoleAgent } from "../sdk/runRole.js";
 import { roles as roleRegistry } from "../roles/index.js";
 import { planApproved } from "../roles/developer.js";
 import { readReviewFindings } from "../roles/reviewer.js";
-import type { RoleInputCtx } from "../roles/types.js";
+import type { RoleInputCtx, RoleSpec } from "../roles/types.js";
+import { jiraToolsFor, loadJiraMcpConfig, mcpServersOption } from "../external/jiraMcpConfig.js";
 import { postJiraComment } from "../external/jiraMcp.js";
 import { createPr } from "../external/gh.js";
 import { checkoutOrCreateBranch } from "../external/git.js";
@@ -511,6 +512,14 @@ async function runRoleAsync(
   const ctrl = new AbortController();
   inFlight.set(runId, ctrl);
 
+  let jira: { tools: string[]; mcpServers: Record<string, unknown> };
+  try {
+    jira = jiraToolsForRun(record, spec);
+  } catch (err) {
+    fail(record, `${spec.title}: ${errMsg(err)}`);
+    return;
+  }
+
   const model = record.models?.[role] || config.models[role];
   const attempt = startAttempt(record, role);
   attempt.model = model;
@@ -530,6 +539,8 @@ async function runRoleAsync(
       repoPaths: record.repos.map((r) => r.path),
       writeRoots: writeRootsFor(record, spec.writeScope),
       bashAllowList: [...spec.bashAllowList, ...(spec.extraBashAllowList?.(record) ?? [])],
+      extraTools: jira.tools,
+      mcpServers: jira.mcpServers,
       maxBudgetUsd,
       signal: ctrl.signal,
     });
@@ -589,6 +600,20 @@ function markAborted(record: RunRecord, role: RoleId, attempt: RoleAttempt): voi
   attempt.endedAt ??= new Date().toISOString();
   saveRun(record);
   emit({ type: "role.ended", runId: record.runId, role, status: "aborted", artifacts: [] });
+}
+
+/**
+ * JIRA MCP tools and server for a role. Only JIRA-sourced runs get them, so a
+ * manual-source run never has JIRA access regardless of the prompt.
+ */
+export function jiraToolsForRun(record: RunRecord, spec: RoleSpec): { tools: string[]; mcpServers: Record<string, unknown> } {
+  if (record.source.kind !== "jira" || !spec.jiraAccess) return { tools: [], mcpServers: {} };
+  const cfg = loadJiraMcpConfig();
+  if (!cfg) {
+    if (spec.id === "analyst") throw new Error("this run is sourced from JIRA but no JIRA MCP server is configured");
+    return { tools: [], mcpServers: {} };
+  }
+  return { tools: jiraToolsFor(cfg, spec.jiraAccess), mcpServers: mcpServersOption(cfg) };
 }
 
 export function writeRootsFor(record: RunRecord, scope: "run" | "repos-and-run"): string[] {

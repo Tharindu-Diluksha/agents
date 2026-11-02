@@ -1,3 +1,4 @@
+import type { JiraAccess } from "../external/jiraMcpConfig.js";
 import type { RoleId, RunRecord } from "../orchestrator/types.js";
 
 /**
@@ -17,6 +18,12 @@ export interface RoleSpec {
   /** Extra Bash patterns that depend on run state (e.g. installs after an approval). */
   extraBashAllowList?(record: RunRecord): RegExp[];
   writeScope: WriteScope;
+  /**
+   * JIRA MCP tools the role gets when a JIRA MCP server is configured:
+   * `issue` = fetch one issue; `read` = fetch, search and other read-only tools.
+   * The add-comment tool is never given to a role (the orchestrator posts after approval).
+   */
+  jiraAccess?: JiraAccess;
   maxTurns?: number;
   cwdFor(record: RunRecord): string;
   buildInput(record: RunRecord, ctx: RoleInputCtx): string;

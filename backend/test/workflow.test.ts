@@ -38,13 +38,20 @@ vi.mock("../src/config.js", async (importOriginal) => {
 
 type Script = (role: string, state: RunState, args: RunRoleAgentArgs) => Promise<RunRoleAgentResult> | RunRoleAgentResult;
 let script: Script;
-const calls: Array<{ role: string; state: RunState; prompt: string; model: string }> = [];
+const calls: Array<{ role: string; state: RunState; prompt: string; model: string; extraTools: string[]; mcpServers: string[] }> = [];
 
 vi.mock("../src/sdk/runRole.js", () => ({
   runRoleAgent: vi.fn(async (args: RunRoleAgentArgs) => {
     const { loadRun } = await import("../src/orchestrator/runStore.js");
     const state = loadRun(args.runId)!.state;
-    calls.push({ role: args.role, state, prompt: args.userPrompt, model: args.model });
+    calls.push({
+      role: args.role,
+      state,
+      prompt: args.userPrompt,
+      model: args.model,
+      extraTools: args.extraTools ?? [],
+      mcpServers: Object.keys(args.mcpServers ?? {}),
+    });
     return script(args.role, state, args);
   }),
 }));
@@ -97,12 +104,14 @@ function happyScript(runId: string): Script {
 }
 
 let seq = 0;
-function newRun(models?: Record<string, string>): string {
+function newRun(models?: Record<string, string>, jira = false): string {
   const runId = `RUN-${++seq}`;
   createRun({
     runId,
     label: runId,
-    source: { kind: "manual", type: "feature", title: "Add widget", description: "d", acceptanceCriteria: ["a"] },
+    source: jira
+      ? { kind: "jira", ticket: "PROJ-7", ticketUrl: "https://acme.atlassian.net/browse/PROJ-7" }
+      : { kind: "manual", type: "feature", title: "Add widget", description: "d", acceptanceCriteria: ["a"] },
     repos: [{ path: repoPath, baseBranch: "master", aiGuidelinePath: null }],
     models,
   });
@@ -294,6 +303,51 @@ describe("workflow state machine", () => {
     script = () => out({ status: "blocked", handoff: null, approvalRequest: null });
     await workflow.startRun(runId);
     expect(await settle(runId, isGateOrEnd)).toBe("paused");
+  });
+});
+
+describe("JIRA MCP wiring", () => {
+  const cfgFile = () => join(tmp, "jira-mcp.json");
+  afterAll(() => rmSync(cfgFile(), { force: true }));
+
+  it("gives JIRA read tools to the Analyst and issue access to the Developer on JIRA runs only", async () => {
+    writeFileSync(cfgFile(), JSON.stringify({ serverName: "jira", server: { type: "http", url: "https://mcp.example.com/mcp" } }));
+    const runId = newRun(undefined, true);
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_plan_approval");
+
+    const [analyst, developer] = calls;
+    expect(analyst!.mcpServers).toEqual(["jira"]);
+    expect(analyst!.extraTools).toEqual([
+      "mcp__jira__getJiraIssue",
+      "mcp__jira__searchJiraIssuesUsingJql",
+      "mcp__jira__getAccessibleAtlassianResources",
+      "mcp__jira__atlassianUserInfo",
+    ]);
+    expect(analyst!.prompt).toContain("`mcp__jira__getJiraIssue`");
+    expect(developer!.extraTools).toEqual(["mcp__jira__getJiraIssue"]);
+
+    // Manual runs never get JIRA tools, even when JIRA is configured.
+    calls.length = 0;
+    const manual = newRun();
+    script = happyScript(manual);
+    await workflow.startRun(manual);
+    await settle(manual, isGateOrEnd);
+    expect(calls[0]!.extraTools).toEqual([]);
+    expect(calls[0]!.mcpServers).toEqual([]);
+  });
+
+  it("fails a JIRA run clearly when no JIRA MCP server is configured", async () => {
+    rmSync(cfgFile(), { force: true });
+    const runId = newRun(undefined, true);
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("failed");
+    expect(loadRun(runId)!.failureReason).toMatch(/no JIRA MCP server is configured/);
+    expect(calls).toHaveLength(0);
   });
 });
 

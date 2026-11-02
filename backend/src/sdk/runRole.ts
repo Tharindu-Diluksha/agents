@@ -72,6 +72,10 @@ export interface RunRoleAgentArgs {
   writeRoots: string[];
   /** Effective Bash allowlist (static role list plus any state-dependent extras). */
   bashAllowList: RegExp[];
+  /** Read-only MCP tools added for this run (e.g. JIRA), auto-approved. */
+  extraTools?: string[];
+  /** MCP servers to attach (keyed by server name). */
+  mcpServers?: Record<string, unknown>;
   /** Hard USD cap for this one SDK query (remaining run budget). Omit for no cap. */
   maxBudgetUsd?: number;
   signal?: AbortSignal;
@@ -108,8 +112,9 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
   const { runId, role, spec, systemPrompt, userPrompt, cwd, repoPaths, writeRoots, signal } = args;
   const existingSessionId = getSessionId(runId, role);
 
+  const allowedTools = [...spec.allowedTools, ...(args.extraTools ?? [])];
   const guardCtx: GuardContext = {
-    allowedTools: spec.allowedTools,
+    allowedTools,
     bashAllowList: args.bashAllowList,
     repoPaths,
     writeRoots,
@@ -121,8 +126,8 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
     return decision;
   };
 
-  const builtinTools = spec.allowedTools.filter((t) => !t.startsWith("mcp__"));
-  const autoApproved = spec.allowedTools.filter((t) => !GATED_TOOLS.has(t));
+  const builtinTools = allowedTools.filter((t) => !t.startsWith("mcp__"));
+  const autoApproved = allowedTools.filter((t) => !GATED_TOOLS.has(t));
 
   const options: Record<string, unknown> = {
     cwd,
@@ -162,6 +167,7 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
     settingSources: [],
   };
   if (args.maxBudgetUsd !== undefined) options.maxBudgetUsd = args.maxBudgetUsd;
+  if (args.mcpServers && Object.keys(args.mcpServers).length > 0) options.mcpServers = args.mcpServers;
   if (existingSessionId) options.resume = existingSessionId;
 
   log.info("sdk.run_role", { runId, role, model: args.model, resume: Boolean(existingSessionId), cwd });
@@ -177,8 +183,18 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
   const maxAttempts = Math.max(1, config.retry.maxAttempts);
   let attemptErr: unknown = null;
 
+  // Live usage for the in-flight SDK attempt, keyed by API message id. The
+  // SDK's final `result` message is authoritative and replaces it.
+  const liveUsage = new Map<string, AttemptUsage>();
+  const emitUsage = () => {
+    const total = { ...metrics.usage };
+    for (const u of liveUsage.values()) addUsage(total, u);
+    emit({ type: "role.usage", runId, role, usage: total, costUsd: metrics.costUsd, final: false });
+  };
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     assistantText.length = 0;
+    liveUsage.clear();
     attemptErr = null;
 
     // After a retry, resume whatever session id we captured on the aborted attempt.
@@ -204,7 +220,15 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
             capturedSessionId = id;
           },
           onAssistantText: (t) => assistantText.push(t),
-          onResult: (r) => addResultMetrics(metrics, r),
+          onAssistantUsage: (id, u) => {
+            liveUsage.set(id, usageFromApi(u));
+            emitUsage();
+          },
+          onResult: (r) => {
+            addResultMetrics(metrics, r);
+            liveUsage.clear();
+            emit({ type: "role.usage", runId, role, usage: { ...metrics.usage }, costUsd: metrics.costUsd, final: true });
+          },
         });
       }
       if (signal?.aborted) throw new Error("aborted");
@@ -282,21 +306,36 @@ function reportDenied(runId: string, role: RoleId, toolName: string, input: Reco
   });
 }
 
-function addResultMetrics(metrics: RunMetrics, r: Record<string, unknown>): void {
+export function addResultMetrics(metrics: RunMetrics, r: Record<string, unknown>): void {
   if (typeof r.total_cost_usd === "number") metrics.costUsd += r.total_cost_usd;
   if (typeof r.num_turns === "number") metrics.numTurns += r.num_turns;
   if (typeof r.subtype === "string") metrics.resultSubtype = r.subtype;
-  const u = (r.usage ?? {}) as Record<string, unknown>;
+  addUsage(metrics.usage, usageFromApi((r.usage ?? {}) as Record<string, unknown>));
+}
+
+/** Converts the API's snake_case usage block to AttemptUsage. */
+export function usageFromApi(u: Record<string, unknown>): AttemptUsage {
   const n = (k: string) => (typeof u[k] === "number" ? (u[k] as number) : 0);
-  metrics.usage.inputTokens += n("input_tokens");
-  metrics.usage.outputTokens += n("output_tokens");
-  metrics.usage.cacheReadInputTokens += n("cache_read_input_tokens");
-  metrics.usage.cacheCreationInputTokens += n("cache_creation_input_tokens");
+  return {
+    inputTokens: n("input_tokens"),
+    outputTokens: n("output_tokens"),
+    cacheReadInputTokens: n("cache_read_input_tokens"),
+    cacheCreationInputTokens: n("cache_creation_input_tokens"),
+  };
+}
+
+function addUsage(into: AttemptUsage, u: AttemptUsage): void {
+  into.inputTokens += u.inputTokens;
+  into.outputTokens += u.outputTokens;
+  into.cacheReadInputTokens += u.cacheReadInputTokens;
+  into.cacheCreationInputTokens += u.cacheCreationInputTokens;
 }
 
 interface MessageHandlers {
   onSessionId: (id: string) => void;
   onAssistantText: (text: string) => void;
+  /** Per-API-call usage; the SDK may emit several assistant messages for one call, sharing its id. */
+  onAssistantUsage: (messageId: string, usage: Record<string, unknown>) => void;
   onResult: (result: Record<string, unknown>) => void;
 }
 
@@ -322,6 +361,10 @@ function handleMessage(
   }
 
   if (type === "assistant") {
+    const apiMessage = (message as { message?: { id?: unknown; usage?: unknown } }).message;
+    if (apiMessage?.usage && typeof apiMessage.usage === "object") {
+      handlers.onAssistantUsage(String(apiMessage.id ?? message.uuid ?? ""), apiMessage.usage as Record<string, unknown>);
+    }
     const inner = (message as { message?: { content?: unknown } }).message?.content ?? message.content;
     const blocks = Array.isArray(inner) ? inner : [];
     for (const block of blocks) {

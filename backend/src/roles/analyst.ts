@@ -1,4 +1,5 @@
 import { ensureRoleDir } from "../orchestrator/artifacts.js";
+import { loadJiraMcpConfig, qualifiedTool } from "../external/jiraMcpConfig.js";
 import { aiGuidelineSection, artifactRelative, headerFor, orchestratorSection } from "./common.js";
 import type { RoleSpec } from "./types.js";
 
@@ -6,20 +7,10 @@ export const analyst: RoleSpec = {
   id: "analyst",
   title: "Product Analyst",
   promptFile: "analyst.md",
-  // Note: MCP JIRA tools are listed here but the role is instructed not to
-  // call them when the run source is manual. The orchestrator does not
-  // post-filter — the role prompt is the gate for manual-source runs.
-  allowedTools: [
-    "Read",
-    "Glob",
-    "Grep",
-    "Write",
-    "Edit",
-    "mcp__atlassian-local__getJiraIssue",
-    "mcp__atlassian-local__searchJiraIssuesUsingJql",
-    "mcp__atlassian-local__getAccessibleAtlassianResources",
-    "mcp__atlassian-local__atlassianUserInfo",
-  ],
+  allowedTools: ["Read", "Glob", "Grep", "Write", "Edit"],
+  // JIRA read tools are added at run time from the JIRA MCP config, and only
+  // for JIRA-sourced runs (see `jiraToolsForRun` in workflow.ts).
+  jiraAccess: "read",
   bashAllowList: [],
   writeScope: "run",
   maxTurns: 30,
@@ -38,8 +29,11 @@ export const analyst: RoleSpec = {
     ];
     if (isJira) {
       const ticket = record.source.kind === "jira" ? record.source.ticket : "";
+      const jira = loadJiraMcpConfig();
+      const getIssue = jira ? qualifiedTool(jira, jira.tools.getIssue) : "(JIRA MCP not configured)";
+      const search = jira?.tools.searchIssues ? qualifiedTool(jira, jira.tools.searchIssues) : null;
       lines.push(
-        `1. Fetch the JIRA ticket \`${ticket}\` using the \`mcp__atlassian-local__getJiraIssue\` tool.`,
+        `1. Fetch the JIRA ticket \`${ticket}\` (${record.source.kind === "jira" ? record.source.ticketUrl : ""}) using the \`${getIssue}\` tool.${search ? ` You may use \`${search}\` to look up linked or related issues.` : ""}`,
         `2. Analyse the story carefully. Call out missing acceptance criteria, ambiguous requirements, dependencies, or risks.`,
         `3. Write the feature documentation to \`${featureDocPath}\` using the shape in \`templates/feature-doc.md\`.`,
         `4. If (and ONLY if) you have substantive feedback the team should see on the ticket (clarifying questions, gaps, misalignments), write a proposed comment to \`${commentPath}\` and set \`approvalRequest.action\` to \`post_jira_comment\`. Otherwise set the request to \`proceed_to_next\`.`,
