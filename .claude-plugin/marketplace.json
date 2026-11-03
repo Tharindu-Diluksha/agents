@@ -1,0 +1,12 @@
+{
+  "name": "tharindu-agents",
+  "description": "Claude Code plugins from the agents orchestrator repo",
+  "owner": { "name": "Tharindu Diluksha" },
+  "plugins": [
+    {
+      "name": "jira-to-pr",
+      "source": "./plugins/jira-to-pr",
+      "description": "JIRA ticket or written request to a GitHub PR in one Claude Code session: TDD pipeline with role subagents and in-chat approvals."
+    }
+  ]
+}

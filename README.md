@@ -74,6 +74,10 @@ The launch dialog's JIRA tab shows the configured server and has a **Test connec
 - **Review auto-routing** (opt-in): `REVIEW_AUTO_ROUTE=true` routes the review gate from `review-findings.json`.
 - **Pause / abort**: Abort stops the running SDK session and pauses the run; "Jump → role" resumes from any role.
 
+## Also available as a Claude Code plugin
+
+`plugins/jira-to-pr/` packages the same workflow as a **Claude Code plugin**: one skill (`/jira-to-pr:run <ticket or description>`) whose main session orchestrates seven role subagents, with approvals in chat instead of this UI. It uses the same artifact templates, so you can run both on the same ticket and compare cost and results. The app keeps the stronger guard rails (enforced allowlists, worktrees, budgets). See [plugins/jira-to-pr/README.md](plugins/jira-to-pr/README.md) for install, models and the comparison guide.
+
 ## Auth
 
 By default the Agent SDK reuses your local Claude CLI login — run `claude /login` once with your Max/Pro account and the orchestrator's sessions will bill against that subscription. Set `ANTHROPIC_API_KEY` in `.env` only if you want to pin billing to an API account or run headless.
