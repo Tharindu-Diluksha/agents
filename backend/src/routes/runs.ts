@@ -3,15 +3,24 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { config } from "../config.js";
-import { emit } from "../events.js";
+import { config, paths } from "../config.js";
+import { emit, readEventLog } from "../events.js";
+import { refreshOverlaps } from "../orchestrator/overlaps.js";
 import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
 import { createRun, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
-import { abortRun, jumpToRole, resumeAfterApproval, skipCurrent, startRun } from "../orchestrator/workflow.js";
+import {
+  abortRun,
+  jumpToRole,
+  removeRunWorkspaces,
+  resumeAfterApproval,
+  roleSlots,
+  skipCurrent,
+  startRun,
+} from "../orchestrator/workflow.js";
 
 const RepoBody = z.object({
   path: z.string().min(1),
@@ -50,6 +59,11 @@ const ApproveBody = z.object({
   feedback: z.string().optional(),
 });
 
+const RemoveWorkspacesBody = z.object({
+  /** Discard uncommitted changes in the worktrees. */
+  force: z.boolean().default(false),
+});
+
 const JumpBody = z.object({
   to: z.enum(ROLES),
 });
@@ -76,6 +90,17 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     maxRunCostUsd: config.maxRunCostUsd,
     reviewAutoRoute: config.reviewAutoRoute,
     jira: describeJiraMcp(),
+    maxConcurrentRoles: config.maxConcurrentRoles,
+    ports: config.ports,
+    syncBaseBeforePr: config.syncBaseBeforePr,
+    worktreesDir: paths.worktreesDir,
+  }));
+
+  /** Global role-session slots (shared by all runs). */
+  app.get("/api/slots", async () => ({
+    limit: config.maxConcurrentRoles,
+    running: roleSlots.running,
+    queued: roleSlots.queued,
   }));
 
   /** Connects to the configured JIRA MCP server and reports status and tools. */
@@ -159,6 +184,9 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       pendingApproval: r.pendingApproval,
       totalCostUsd: totalCostUsd(r),
       totalUsage: usageTotals(r),
+      overlaps: r.overlaps ?? [],
+      pauseReason: r.pauseReason,
+      failureReason: r.failureReason,
     }));
     return { runs };
   });
@@ -234,6 +262,41 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       reply.send({ ok: true });
     } catch (err) {
       reply.code(400).send({ error: "jump_failed", detail: errMsg(err) });
+    }
+  });
+
+  /** Persisted event stream (runs/<id>/events.jsonl), oldest first, for replay on page load. */
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/runs/:id/events", async (req, reply) => {
+    if (!loadRun(req.params.id)) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 5000) || 5000, 1), 20000);
+    return { events: readEventLog(req.params.id, limit) };
+  });
+
+  /** Re-computes file overlaps with other active runs on the same repos. */
+  app.post<{ Params: { id: string } }>("/api/runs/:id/overlaps/refresh", async (req, reply) => {
+    const record = loadRun(req.params.id);
+    if (!record) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    await refreshOverlaps(record);
+    return { overlaps: record.overlaps ?? [] };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/runs/:id/workspaces/remove", async (req, reply) => {
+    const parsed = RemoveWorkspacesBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const results = await removeRunWorkspaces(req.params.id, parsed.data.force);
+      reply.send({ results });
+    } catch (err) {
+      reply.code(400).send({ error: "remove_failed", detail: errMsg(err) });
     }
   });
 

@@ -17,12 +17,19 @@ export function recoverRuns(): void {
     if (!role) continue;
     const attempts = record.roles[role] ?? [];
     const last = attempts[attempts.length - 1];
-    if (!last || last.status !== "running") continue;
+    const live = last && (last.status === "running" || last.status === "queued");
+    // Also: the run entered this running state but died before the role's
+    // attempt started (e.g. while syncing with the base before the PR Creator).
+    const enteredAt = [...record.stateHistory].reverse().find((h) => h.to === record.state)?.at;
+    const neverStarted = !live && enteredAt !== undefined && (!last || last.startedAt < enteredAt);
+    if (!live && !neverStarted) continue;
 
-    last.status = "failed";
-    last.errorMessage = "orchestrator restarted mid-run; resuming via session replay";
-    last.endedAt = new Date().toISOString();
-    saveRun(record);
+    if (live) {
+      last.status = "failed";
+      last.errorMessage = "orchestrator restarted mid-run; resuming via session replay";
+      last.endedAt = new Date().toISOString();
+      saveRun(record);
+    }
 
     log.info("recovery.resuming", { runId: record.runId, role });
     void runRoleResume(record.runId, role);

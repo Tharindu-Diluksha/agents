@@ -10,6 +10,7 @@ import {
   TRACEABILITY_NOTE,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
+import { workDir } from "../orchestrator/workspaces.js";
 
 /**
  * Unit Tester runs twice per implementation cycle:
@@ -34,9 +35,10 @@ export const unitTester: RoleSpec = {
     BASH.ls,
   ],
   writeScope: "repos-and-run",
+  needsWorkspace: true,
   maxTurns: 80,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const reportPath = artifactRelative(record, "unitTester", "unit-test-report.md");

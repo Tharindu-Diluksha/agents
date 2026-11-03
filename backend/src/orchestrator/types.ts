@@ -68,7 +68,8 @@ export interface PendingApproval {
 export interface RoleAttempt {
   startedAt: string;
   endedAt?: string;
-  status: "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
+  /** `queued` = preparing the workspace or waiting for a free concurrency slot. */
+  status: "queued" | "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
   /** Run state when the attempt started — distinguishes e.g. unit-test red vs green phases. */
   state?: RunState;
   sessionId?: string;
@@ -96,6 +97,16 @@ export interface RepoTarget {
   baseBranch: string;
   /** Optional path (relative to `path`) to a project AI guideline document. */
   aiGuidelinePath: string | null;
+  /**
+   * The run's own git worktree for this repo, once created. Roles work here,
+   * never in `path` (the user's checkout). Null/absent before the Developer's
+   * first session, or after the worktree was removed.
+   */
+  workPath?: string | null;
+  /** Feature branch for this repo, once the user approved it. */
+  branch?: string | null;
+  /** Ref the worktree started from (`origin/<base>` or `<base>`); diffs compare against it. */
+  baseRef?: string | null;
 }
 
 export type SourceType = "feature" | "change" | "fix";
@@ -136,4 +147,27 @@ export interface RunRecord {
   models?: Partial<Record<RoleId, string>>;
   /** Number of fix loops (review rejection or a tester handing back to the Developer) so far. */
   fixIterations?: number;
+  /**
+   * `worktree`: each repo gets an isolated git worktree for this run (default).
+   * `in-place`: roles work in the user's checkout (runs created before worktrees).
+   */
+  workspace?: "worktree" | "in-place";
+  /** Ports reserved for this run's dev/test servers while its worktrees exist. */
+  ports?: PortBlock | null;
+  /** Last computed file overlaps with other active runs. */
+  overlaps?: Overlap[];
+}
+
+/** Files changed by this run that another active run on the same repo also changes. */
+export interface Overlap {
+  otherRunId: string;
+  otherLabel: string;
+  repoPath: string;
+  files: string[];
+}
+
+/** Ports reserved for one run: [base, base + count). Passed to role sessions as env vars. */
+export interface PortBlock {
+  base: number;
+  count: number;
 }

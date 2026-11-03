@@ -4,6 +4,8 @@ import fastifyWebsocket from "@fastify/websocket";
 import { existsSync, mkdirSync } from "node:fs";
 import { config, paths } from "./config.js";
 import { log } from "./log.js";
+import { join } from "node:path";
+import { acquireInstanceLock, InstanceLockError } from "./orchestrator/instanceLock.js";
 import { recoverRuns } from "./orchestrator/recovery.js";
 import { registerRunsRoutes } from "./routes/runs.js";
 import { registerWsRoutes } from "./routes/ws.js";
@@ -11,6 +13,25 @@ import { registerWsRoutes } from "./routes/ws.js";
 async function main() {
   for (const dir of [paths.runsDir, paths.sessionsDir]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+
+  // Only one backend may own runs/ (state is cached in memory).
+  let releaseLock: () => void;
+  try {
+    releaseLock = await acquireInstanceLock(join(paths.runsDir, ".orchestrator.lock"), { port: config.port });
+  } catch (err) {
+    if (err instanceof InstanceLockError) {
+      log.error("backend.already_running", { err: err.message });
+      process.exit(1);
+    }
+    throw err;
+  }
+  process.on("exit", releaseLock);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      releaseLock();
+      process.exit(0);
+    });
   }
 
   const app = Fastify({ logger: false });

@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from "vue-router";
+import { useAttention } from "./composables/useAttention.js";
+
+const { attention, notifyPermission, enableNotifications } = useAttention();
 </script>
 
 <template>
@@ -7,9 +10,17 @@ import { RouterLink, RouterView } from "vue-router";
     <header>
       <RouterLink to="/" class="brand">Agent Orchestrator</RouterLink>
       <span class="muted">multi-agent workflow</span>
+      <div style="flex: 1" />
+      <RouterLink v-if="attention.length" to="/" class="chip awaiting" title="Runs waiting for you">
+        {{ attention.length }} need{{ attention.length === 1 ? "s" : "" }} attention
+      </RouterLink>
+      <button v-if="notifyPermission === 'default'" @click="enableNotifications" title="Get a desktop notification when a run needs you">
+        Enable notifications
+      </button>
     </header>
     <main>
-      <RouterView />
+      <!-- Keyed so switching between runs remounts the page (fresh socket + history). -->
+      <RouterView :key="$route.fullPath" />
     </main>
   </div>
 </template>

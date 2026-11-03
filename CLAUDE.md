@@ -30,13 +30,14 @@ The SDK reuses the local Claude CLI login by default (`claude /login`). `ANTHROP
 Vue UI ──REST + WebSocket──► Fastify orchestrator ──spawns──► Agent SDK sessions
                                       │
                                       ├─ writes/reads artifacts in per-role folders: runs/<runId>/<role>/*.md
+                                      ├─ gives each run its own git worktree per repo: worktrees/<runId>/<repoSlug>
                                       ├─ persists per-role session ids in sessions/<runId>/<role>.json
                                       ├─ on boot: scans runs/*/run.json and resumes any mid-flight role
                                       └─ performs mutating external actions (JIRA comment, git branch creation, gh pr create)
                                          ONLY after a UI approval
 ```
 
-Five load-bearing design choices that are easy to miss by reading one file:
+Six load-bearing design choices that are easy to miss by reading one file:
 
 1. **Roles never share SDK context.** Handoff is file-based: each role writes a markdown artifact that the next role reads. On a re-run (e.g. Developer re-run after Reviewer flagged issues), the orchestrator resumes that role's SDK session via `resume: <sessionId>` and attaches the new feedback artifact as input — the role keeps its own memory of its prior attempt.
 
@@ -46,7 +47,9 @@ Five load-bearing design choices that are easy to miss by reading one file:
 
 4. **The state machine, not the role, picks the next step.** On `status: "done"` the orchestrator advances by the current run state (`nextAfterDone` in `workflow.ts`); a role's `handoff` is only honoured on `blocked` (hand-backs to the Developer / Unit Tester, which count as fix loops). The Unit Tester runs in two phases told apart by run state (`unit_tests_red_running` / `unit_tests_green_running`), resuming the same SDK session.
 
-5. **Mid-flight recovery is session-replay, not snapshotting.** `backend/src/orchestrator/recovery.ts` runs at startup; for every run whose latest attempt was `running` when the backend died, it re-issues the role with the SDK session id. There is no DB — the on-disk `run.json` plus the SDK's own session persistence is the state.
+5. **Runs are isolated in per-run git worktrees.** Roles never work in the user's checkout (`RepoTarget.path`); they work in `RepoTarget.workPath` (always go through `workDir(repo)` in `orchestrator/workspaces.ts`). The worktree is created before the first role with `needsWorkspace` (Developer planning) — detached at `origin/<base>` — and the branch gate switches *that* worktree to the feature branch. The path must stay fixed for the run's life: the SDK finds a session to resume by its cwd. Runs created before worktrees have `workspace: "in-place"` and keep the old checkout-switching behaviour.
+
+6. **Mid-flight recovery is session-replay, not snapshotting.** `backend/src/orchestrator/recovery.ts` runs at startup; for every run whose latest attempt was `running`/`queued` when the backend died — or that entered a running state but died before the role's attempt began (e.g. while syncing with the base) — it re-issues the role with the SDK session id. There is no DB — the on-disk `run.json` plus the SDK's own session persistence is the state.
 
 ## Where things live
 
@@ -56,10 +59,17 @@ Five load-bearing design choices that are easy to miss by reading one file:
 - `backend/src/sdk/permissions.ts` — the tool guard (pure functions, unit-tested). Called from both a `PreToolUse` hook and `canUseTool`, because the SDK auto-approves anything in `allowedTools` without calling `canUseTool`. Only read-only tools go in `allowedTools`; Bash/Write/Edit/MultiEdit/NotebookEdit are always checked (Bash allowlist + no shell chaining; writes limited by the role's `writeScope`).
 - `backend/src/roles/<role>.ts` — per-role config: tool allowlist, Bash regex allowlist (built from `BASH` in `common.ts`), `writeScope`, input builder (how to assemble the per-run prompt from upstream artifacts).
 - `backend/src/roles/common.ts` — shared helpers for input builders. `aiGuidelineSection(record, role)` injects the "AI guideline" block only when the run has a resolved ai-guideline path; `orchestratorSection(ctx)` renders orchestrator signals, hand-back notes and user feedback.
+- `backend/src/orchestrator/workspaces.ts` — per-run worktrees: `prepareWorkspaces` (create + copy `WORKTREE_COPY_FILES` + install deps; idempotent, re-creates on the run's branch after removal), `setFeatureBranch` (branch gate; refuses a branch checked out in another worktree), `removeWorkspaces`, `workDir`, `diffBase` (the ref the worktree started from — Reviewer/PR Creator diff against it).
+- `backend/src/orchestrator/concurrency.ts` — FIFO `Semaphore`; `roleSlots` in `workflow.ts` caps role sessions across all runs (`MAX_CONCURRENT_ROLES`). While waiting (or while the workspace is prepared) the attempt's status is `queued`; the slot is released as soon as the SDK session ends, before routing to the next role.
+- `backend/src/orchestrator/instanceLock.ts` — `runs/.orchestrator.lock` (pid + port). Taken in `index.ts` before listening; a second backend on the same state folder exits. Stale locks (dead pid) are taken over.
+- `backend/src/orchestrator/ports.ts` — per-run port blocks (`allocatePortBlock`, serialised in `prepareWorkspaces`; held from allocation until the worktrees are removed), `runEnv(record)` (env for every role session: `PORT`, `E2E_PORT`, `E2E_BASE_URL`, `ORCH_PORT_*`, `ORCH_RUN_ID` — passed via the SDK `env` option, so every Bash command inherits it) and the prompt lines in `headerFor`.
+- `backend/src/orchestrator/overlaps.ts` — `refreshOverlaps(record)`: changed files (`git diff` vs merge-base + untracked, minus `WORKTREE_COPY_FILES`) of every active run sharing a repo; shared files are stored as `record.overlaps` on both runs and emitted as `run.overlaps`. Runs after each workspace role, on worktree removal, when a run finishes, and via `POST /api/runs/:id/overlaps/refresh`. Advisory only; never throws.
+- Sync before PR: `startRole` routes `pr_creator_running` through `syncThenStartPrCreator` (workflow.ts) → `syncWithBase` (git.ts): rebase if never pushed, merge if `origin/<branch>` exists; a conflicting merge is left in progress and the Developer gets `signal: "merge_conflicts"` (a fix loop). Notes such as "rebased onto origin/main" reach the PR Creator via `RoleInputCtx.notes`.
+- `backend/src/events.ts` — event bus **and log**: `emit` stamps `at`, gives persisted events a per-run `seq`, and appends them to `runs/<runId>/events.jsonl` (live `role.usage` ticks are not persisted; big tool inputs are truncated in the log). `GET /api/runs/:id/events` replays it; the run page merges replay + WebSocket by `seq`.
 - `backend/src/orchestrator/runStore.ts` — `run.json` persistence. Records are cached in memory (one shared object per run, so concurrent callers can't overwrite each other's changes) and written atomically (temp file + rename). Also migrates pre-split runs (`tester` → `e2eTester`).
 - `roles/<role>.md` — the role's system prompt. **This is the first place to edit when you want to change what a role does.** No TypeScript change needed.
 - `templates/*.md` — artifact scaffolds the roles fill in. Edit these to change artifact shape.
-- `backend/src/external/{jiraMcp,gh,git}.ts` — all mutating external calls. Nothing else should shell out.
+- `backend/src/external/{jiraMcp,gh,git,deps}.ts` — all mutating external calls (`deps.ts` installs a worktree's dependencies). Nothing else should shell out.
 - `runs/<runId>/` holds `run.json` (the state file) and one subfolder per role (`analyst/feature-doc.md`, `developer/adr.md` + `impl-plan.md`, `unitTester/unit-test-report.md`, `integrationTester/integration-test-report.md`, `reviewer/review-report.md` + `review-findings.json`, `e2eTester/e2e-test-report.md`, `prCreator/<repoSlug>-pr-description.md`) plus `orchestrator/proposed-branches.json`. Role attribution for UI tabs comes from the subfolder name (`backend/src/orchestrator/artifacts.ts`). The `runId` is derived from the JIRA ticket key (jira source) or a slug of the manual title (manual source), plus a short nanoid for uniqueness.
 - `sessions/<runId>/<role>.json` holds the SDK session id for each role. Delete one to force that role to start a fresh SDK session.
 - Both folders are gitignored.
@@ -101,7 +111,7 @@ The orchestrator supports an optional per-repo AI guideline document. In code an
   - The orchestrator *posts* comments after approval (`backend/src/external/jiraMcp.ts :: postJiraComment`), in a session whose only tool is add-comment; it succeeds only if that tool returns without error, otherwise the approval gate re-opens with the error.
   - `POST /api/jira/test` (`testJiraMcp`) attaches the server, reads the SDK `system/init` message for connection status and exposed tools, then aborts. The launch dialog shows this. Launching a JIRA run with nothing configured is rejected with 400.
 - **GitHub**: via `gh` CLI. The user must be authenticated (`gh auth status`).
-- **Target repo**: specified per-run in the launch dialog. Must be an existing checkout. Developer and tester roles run commands (e.g. `npm test`) with `cwd` set to the first repo, or `cd <repo> && …` for the others.
+- **Target repo**: specified per-run in the launch dialog. Must be an existing checkout; the run works in its own worktree of it. Developer and tester roles run commands (e.g. `npm test`) with `cwd` set to the first repo's worktree, or `cd <worktree> && …` for the others. `gh pr create` and pushes run from the worktree.
 
 ## Models, limits, and cost
 
@@ -120,6 +130,11 @@ The orchestrator supports an optional per-repo AI guideline document. In code an
 The orchestrator is language-agnostic in principle, but the role prompts and the per-role Bash allowlists are shaped for Node/TypeScript repos using Vitest for unit tests, git, and a GitHub origin. If you want to drive non-TS repos, you'll need to adapt the `BASH` patterns in `backend/src/roles/common.ts` and the per-role allowlists in `backend/src/roles/*.ts`.
 
 ## Gotchas
+
+- Only one backend process may use a given `runs/` folder (enforced by the lock). Run state is cached in memory, so a second writer would lose updates. That's also why plain files are enough here; a database only becomes worth it with several backend processes or users.
+- Worktrees share the repo's object store and refs: a branch can be checked out in only one worktree at a time (git enforces it, and `proposeBranches` avoids it). Deleting `worktrees/<runId>` by hand leaves stale git metadata; use "Remove worktrees" (or `git worktree prune`).
+- Tests in `workflow.test.ts` use a real throwaway git repo, so `git` must be on PATH.
+- Frontend: `App.vue` keys `<RouterView>` by route, so moving between runs remounts the run page (fresh socket + history). `composables/useAttention.ts` holds the app-wide `/ws/runs` socket that keeps the run list fresh and raises notifications.
 
 - Deleting a role's session id file is a legitimate "start over" — the role will begin from scratch next run.
 - Role prompts (`roles/*.md`) are read from disk each time a role starts, so prompt edits apply to the next role invocation without a restart. TypeScript changes still need a restart (`tsx watch` does that in dev).

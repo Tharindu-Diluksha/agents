@@ -27,6 +27,8 @@ export const paths = {
   templatesDir: resolve(here, "..", "..", "templates"),
   runsDir: resolve(here, "..", "..", "runs"),
   sessionsDir: resolve(here, "..", "..", "sessions"),
+  /** Per-run git worktrees: <worktreesDir>/<runId>/<repoSlug>. */
+  worktreesDir: process.env.WORKTREES_DIR ? resolve(process.env.WORKTREES_DIR) : resolve(here, "..", "..", "worktrees"),
   frontendDist: resolve(here, "..", "..", "frontend", "dist"),
 } as const;
 
@@ -62,5 +64,30 @@ export const config = {
     maxAttempts: num("RUN_RETRY_MAX_ATTEMPTS", 3),
     initialDelayMs: num("RUN_RETRY_INITIAL_DELAY_MS", 1000),
   },
+  /** Role sessions allowed to run at once across all runs. 0 = unlimited. */
+  maxConcurrentRoles: num("MAX_CONCURRENT_ROLES", 2),
+  worktree: {
+    /** `git fetch origin <base>` before creating a worktree, so it starts from the latest base. */
+    fetchBase: (process.env.WORKTREE_FETCH_BASE ?? "true").toLowerCase() !== "false",
+    /** Install dependencies (npm ci / pnpm / yarn, by lockfile) in each new worktree. */
+    installDeps: (process.env.WORKTREE_INSTALL_DEPS ?? "true").toLowerCase() !== "false",
+    /** Untracked files to copy from the original checkout into each worktree (e.g. `.env.test`). */
+    copyFiles: (process.env.WORKTREE_COPY_FILES ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+  /**
+   * Each run with a worktree reserves a block of PORT_BLOCK_SIZE ports from
+   * [PORT_RANGE_START, PORT_RANGE_END) for its dev/test servers, so parallel
+   * E2E/integration runs don't collide.
+   */
+  ports: {
+    rangeStart: num("PORT_RANGE_START", 41000),
+    rangeEnd: num("PORT_RANGE_END", 42000),
+    blockSize: Math.max(1, num("PORT_BLOCK_SIZE", 10)),
+  },
+  /** Bring the branch up to date with its base (rebase, or merge once pushed) before the PR Creator runs. */
+  syncBaseBeforePr: (process.env.SYNC_BASE_BEFORE_PR ?? "true").toLowerCase() !== "false",
   branchNameTemplate: process.env.BRANCH_NAME_TEMPLATE ?? "feature/{ticket}-{slug}",
 } as const;

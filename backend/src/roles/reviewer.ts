@@ -13,6 +13,7 @@ import {
 } from "./common.js";
 import { readArtifact } from "../orchestrator/artifacts.js";
 import type { RoleSpec } from "./types.js";
+import { diffBase, workDir } from "../orchestrator/workspaces.js";
 
 const FindingsSchema = z.object({
   blocker: z.number().int().min(0),
@@ -51,15 +52,16 @@ export const reviewer: RoleSpec = {
   ],
   // Read-only on source: the Reviewer can only write its own report files.
   writeScope: "run",
+  needsWorkspace: true,
   maxTurns: 50,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const reportPath = artifactRelative(record, "reviewer", "review-report.md");
     const findingsPath = artifactRelative(record, "reviewer", "review-findings.json");
     const diffScope = record.repos
-      .map((r) => `- \`${r.path}\`: \`git diff ${r.baseBranch}...HEAD\` and \`git log ${r.baseBranch}..HEAD\``)
+      .map((r) => `- \`${workDir(r)}\`: \`git diff ${diffBase(r)}...HEAD\` and \`git log ${diffBase(r)}..HEAD\``)
       .join("\n");
     const lines = [
       headerFor(record, "Code Reviewer"),

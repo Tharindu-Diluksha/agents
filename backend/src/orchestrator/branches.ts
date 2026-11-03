@@ -1,15 +1,19 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { config, paths } from "../config.js";
-import { currentBranch } from "../external/git.js";
+import { branchExists } from "../external/git.js";
+import { describeHolder, usesWorktrees, worktreeHoldingBranch } from "./workspaces.js";
 import { log } from "../log.js";
 import type { RunRecord } from "./types.js";
 
 export interface BranchProposal {
   repoPath: string;
   baseBranch: string;
+  /** Branch the run already uses for this repo (if the gate is being re-done), else null. */
   currentBranch: string | null;
   suggestedBranch: string;
+  /** Why the suggestion differs from the plain template, if it does. */
+  note?: string;
 }
 
 /**
@@ -48,29 +52,40 @@ function renderBranchName(label: string, slug: string): string {
 }
 
 /**
- * Builds one branch proposal per repo. If a repo is already on a non-base
- * branch (e.g. the user manually checked something out), that existing name is
- * suggested instead so we never silently overwrite the user's choice.
+ * Builds one branch proposal per repo from BRANCH_NAME_TEMPLATE.
+ *
+ * It never suggests "whatever the repo is on right now": with parallel runs
+ * that could be another run's feature branch. If the templated name is
+ * already checked out in another worktree (another run, or the user's own
+ * checkout), a run-specific suffix is added and the reason is noted.
  */
 export async function proposeBranches(record: RunRecord): Promise<BranchProposal[]> {
   const slug = deriveFeatureSlug(record);
+  const base = renderBranchName(record.label, slug);
+  const suffix = record.runId.split("-").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "run";
   const out: BranchProposal[] = [];
   for (const repo of record.repos) {
-    let current: string | null = null;
+    let suggested = base;
+    let note: string | undefined;
     try {
-      current = await currentBranch(repo.path);
+      // In-place runs check out in the user's checkout, so that one doesn't count as a conflict.
+      const except = usesWorktrees(record) ? repo.workPath : repo.path;
+      const holder = await worktreeHoldingBranch(repo.path, base, except);
+      if (holder) {
+        suggested = `${base}-${suffix}`.slice(0, 80);
+        note = `"${base}" is already checked out in ${describeHolder(holder)}, so a run-specific name is suggested.`;
+      } else if (await branchExists(repo.path, base)) {
+        note = `Branch "${base}" already exists; this run will continue on it. Rename it to start fresh.`;
+      }
     } catch (err) {
-      log.warn("branches.current_branch_failed", { repo: repo.path, err: errMsg(err) });
+      log.warn("branches.inspect_failed", { repo: repo.path, err: errMsg(err) });
     }
-    const suggested =
-      current && current !== repo.baseBranch
-        ? current
-        : renderBranchName(record.label, slug);
     out.push({
       repoPath: repo.path,
       baseBranch: repo.baseBranch,
-      currentBranch: current,
+      currentBranch: repo.branch ?? null,
       suggestedBranch: suggested,
+      note,
     });
   }
   return out;

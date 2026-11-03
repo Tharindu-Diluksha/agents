@@ -10,6 +10,7 @@ import {
   primaryRepo,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
+import { workDir } from "../orchestrator/workspaces.js";
 
 /** True once the user approved the plan and branches were created. */
 export function planApproved(record: RunRecord): boolean {
@@ -40,9 +41,10 @@ export const developer: RoleSpec = {
     BASH.ls,
   ],
   writeScope: "repos-and-run",
+  needsWorkspace: true,
   maxTurns: 100,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const adrPath = artifactRelative(record, "developer", "adr.md");

@@ -1,15 +1,32 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
+import { api } from "../api.js";
 import { useRouter } from "vue-router";
 import { useRunsStore } from "../stores/runs.js";
 import LaunchRunDialog from "./LaunchRunDialog.vue";
-import { formatTokens, formatUsd, stateChipClass, totalTokens } from "../types.js";
+import { formatTokens, formatUsd, stateChipClass, totalTokens, type Slots } from "../types.js";
 
 const store = useRunsStore();
 const router = useRouter();
 const showDialog = ref(false);
 
-onMounted(() => store.refresh());
+// Global role-session slots, shared by all runs (MAX_CONCURRENT_ROLES).
+const slots = ref<Slots | null>(null);
+async function refreshSlots() {
+  try {
+    slots.value = await api.getSlots();
+  } catch {
+    slots.value = null;
+  }
+}
+// The run list itself is kept fresh by the app-wide event socket (useAttention).
+let timer: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  store.refresh();
+  refreshSlots();
+  timer = setInterval(refreshSlots, 5000);
+});
+onUnmounted(() => clearInterval(timer));
 
 function onLaunched(runId: string) {
   showDialog.value = false;
@@ -21,12 +38,26 @@ function onLaunched(runId: string) {
   <div>
     <div class="row">
       <h2>Runs</h2>
+      <span v-if="slots" class="chip" :class="slots.queued > 0 ? 'awaiting' : 'idle'" title="Role sessions running across all runs (MAX_CONCURRENT_ROLES)">
+        {{ slots.running }}/{{ slots.limit > 0 ? slots.limit : "∞" }} roles running<template v-if="slots.queued">, {{ slots.queued }} queued</template>
+      </span>
       <div class="spacer" />
       <button class="primary" @click="showDialog = true">Launch new run</button>
       <button @click="store.refresh()" :disabled="store.loading">Refresh</button>
     </div>
 
     <p v-if="store.error" class="error">{{ store.error }}</p>
+
+    <section v-if="store.attention.length" class="panel attention">
+      <h3 style="margin: 0 0 6px">Needs your attention</h3>
+      <div v-for="item in store.attention" :key="item.run.runId" class="attention-row">
+        <span class="chip" :class="item.kind === 'failed' ? 'failed' : item.kind === 'paused' ? 'paused' : 'awaiting'">
+          {{ item.kind === "approval" ? "approval" : item.kind }}
+        </span>
+        <RouterLink :to="`/runs/${item.run.runId}`">{{ item.run.label }}</RouterLink>
+        <span class="muted reason">{{ item.reason }}</span>
+      </div>
+    </section>
 
     <div v-if="store.runs.length === 0" class="panel muted" style="text-align:center">
       No runs yet. Launch one with a JIRA ticket URL and the absolute path to the target repo.
@@ -50,7 +81,14 @@ function onLaunched(runId: string) {
             <div v-else class="muted" style="font-size:12px">{{ r.source.type }} · {{ r.source.title }}</div>
             <div class="muted mono" style="font-size:11px">{{ r.runId }}</div>
           </td>
-          <td><span class="chip" :class="stateChipClass(r.state)">{{ r.state }}</span></td>
+          <td>
+            <span class="chip" :class="stateChipClass(r.state)">{{ r.state }}</span>
+            <div v-if="r.overlaps?.length" style="margin-top: 4px">
+              <span class="chip awaiting" :title="r.overlaps.map((o) => `${o.otherLabel}: ${o.files.join(', ')}`).join('\n')">
+                overlaps {{ r.overlaps.map((o) => o.otherLabel).join(", ") }}
+              </span>
+            </div>
+          </td>
           <td class="mono muted">
             <div v-for="repo in r.repos" :key="repo.path">{{ repo.path }}</div>
           </td>
@@ -75,4 +113,7 @@ table.runs { width: 100%; border-collapse: collapse; margin-top: 16px; }
 table.runs th, table.runs td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 table.runs th { background: var(--panel); color: var(--muted); font-weight: 500; }
 .error { color: var(--danger); }
+.attention { margin-top: 12px; border-color: var(--warn); }
+.attention-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; min-width: 0; }
+.attention-row .reason { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
 </style>

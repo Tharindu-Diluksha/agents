@@ -58,13 +58,17 @@ export interface PendingApproval {
 }
 
 export interface ProposedBranches {
-  perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string }>;
+  perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string; note?: string }>;
 }
 
 export interface RepoTarget {
   path: string;
   baseBranch: string;
   aiGuidelinePath: string | null;
+  /** This run's git worktree for the repo, once created. */
+  workPath?: string | null;
+  branch?: string | null;
+  baseRef?: string | null;
 }
 
 export type SourceType = "feature" | "change" | "fix";
@@ -96,6 +100,9 @@ export interface RunSummary {
   pendingApproval: PendingApproval | null;
   totalCostUsd: number;
   totalUsage: AttemptUsage;
+  overlaps?: Overlap[];
+  pauseReason?: string;
+  failureReason?: string;
 }
 
 export interface AttemptUsage {
@@ -105,7 +112,7 @@ export interface AttemptUsage {
   cacheCreationInputTokens: number;
 }
 
-export type AttemptStatus = "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
+export type AttemptStatus = "queued" | "running" | "done" | "awaiting_approval" | "blocked" | "failed" | "aborted";
 
 export interface RoleAttempt {
   startedAt: string;
@@ -121,6 +128,8 @@ export interface RoleAttempt {
 }
 
 export interface RunDetail extends RunSummary {
+  workspace?: "worktree" | "in-place";
+  ports?: { base: number; count: number } | null;
   roles: Partial<Record<RoleId, RoleAttempt[]>>;
   models?: Partial<Record<RoleId, string>>;
   effectiveModels: Record<RoleId, string>;
@@ -131,12 +140,24 @@ export interface RunDetail extends RunSummary {
   failureReason?: string;
 }
 
-export type RunEvent =
+/** Server events carry a timestamp; persisted ones also a per-run sequence number. */
+export type RunEvent = RawRunEvent & { at?: string; seq?: number };
+
+export interface Overlap {
+  otherRunId: string;
+  otherLabel: string;
+  repoPath: string;
+  files: string[];
+}
+
+type RawRunEvent =
   | { type: "ws.hello"; runId?: string; scope?: string }
+  | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
   | { type: "run.created"; runId: string; label: string; repoPaths: string[] }
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }
   | { type: "role.started"; runId: string; role: RoleId; attempt: number }
+  | { type: "role.queued"; runId: string; role: RoleId; position: number }
   | { type: "role.message"; runId: string; role: RoleId; text: string; subtype: "assistant" | "user" | "system" }
   | { type: "role.tool_call"; runId: string; role: RoleId; name: string; input: unknown; toolUseId: string }
   | { type: "role.tool_result"; runId: string; role: RoleId; toolUseId: string; isError: boolean; summary: string }
@@ -172,6 +193,16 @@ export interface ServerConfig {
   maxRunCostUsd: number;
   reviewAutoRoute: boolean;
   jira: JiraMcpSummary;
+  maxConcurrentRoles: number;
+  worktreesDir: string;
+  ports: { rangeStart: number; rangeEnd: number; blockSize: number };
+  syncBaseBeforePr: boolean;
+}
+
+export interface Slots {
+  limit: number;
+  running: number;
+  queued: number;
 }
 
 export function stateChipClass(state: RunState): string {

@@ -41,6 +41,7 @@ export function createRun(input: {
     pendingApproval: null,
     models: input.models,
     fixIterations: 0,
+    workspace: "worktree",
   };
   mkdirSync(runDir(input.runId), { recursive: true });
   cache.set(record.runId, record);
@@ -149,5 +150,7 @@ function migrateLegacy(record: RunRecord): RunRecord {
     record.pendingApproval.role = "e2eTester";
   }
   record.fixIterations ??= 0;
+  // Runs from before per-run worktrees keep working in the user's checkout.
+  record.workspace ??= "in-place";
   return record;
 }

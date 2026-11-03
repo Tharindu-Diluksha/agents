@@ -11,6 +11,7 @@ import {
   TRACEABILITY_NOTE,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
+import { workDir } from "../orchestrator/workspaces.js";
 
 /** True once the user approved scaffolding a Playwright suite for this run. */
 export function suiteCreationApproved(record: RunRecord): boolean {
@@ -41,9 +42,10 @@ export const e2eTester: RoleSpec = {
     return suiteCreationApproved(record) ? [/^(npm|pnpm)\s+(install|i|add)(\s|$)/] : [];
   },
   writeScope: "repos-and-run",
+  needsWorkspace: true,
   maxTurns: 100,
   cwdFor(record) {
-    return primaryRepo(record).path;
+    return workDir(primaryRepo(record));
   },
   buildInput(record, ctx) {
     const reportPath = artifactRelative(record, "e2eTester", "e2e-test-report.md");
@@ -58,6 +60,12 @@ export const e2eTester: RoleSpec = {
       "- If present: proceed to step 2.",
       "",
       "**Step 2.** Write (or extend) end-to-end tests covering every user-facing acceptance criterion in the feature doc.",
+      ...(record.ports
+        ? [
+            "",
+            `**Ports.** Run the app under test on this run's ports (see the header). If \`playwright.config.*\` hard-codes a port or base URL (\`webServer.port\`/\`url\`, \`use.baseURL\`), change it to read \`process.env.E2E_PORT\` / \`process.env.E2E_BASE_URL\` with the old value as the fallback, and make sure the \`webServer.command\` starts the app on that port (most dev servers honour \`PORT\`; otherwise pass the port flag). This is a test-infrastructure change you may make; mention it in the report.`,
+          ]
+        : []),
       "",
       "**Step 3.** Run the suite. Re-run a failing test once before classifying it, to rule out flakiness. For each failure, classify:",
       "- **test-bug**: the test itself is wrong (selector, timing, setup). Fix it inline, rerun.",
