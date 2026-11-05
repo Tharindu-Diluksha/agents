@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import { api } from "../api.js";
 import { useRunSocket } from "../composables/useRunSocket.js";
 import {
@@ -65,6 +65,10 @@ function pushEvent(ev: RunEvent) {
 }
 
 function applyLive(ev: RunEvent) {
+  if (ev.type === "run.removed") {
+    void router.push(ev.archived ? "/analytics" : "/");
+    return;
+  }
   if (ev.type === "role.usage") {
     // Not added to the stream; the final numbers land in run.json on role.ended.
     liveUsage.value = { ...liveUsage.value, [ev.role]: { usage: ev.usage, costUsd: ev.costUsd } };
@@ -191,6 +195,36 @@ async function skip() { await api.skip(props.id); await refresh(); }
 async function jump(to: RoleId) { await api.jump(props.id, to); activeRole.value = to; await refresh(); }
 async function abort() { await api.abort(props.id); await refresh(); }
 
+// Archive / delete: only for finished, failed, paused or unstarted runs.
+const router = useRouter();
+const canRemove = computed(() => ["done", "failed", "paused", "created"].includes(detail.value?.state ?? ""));
+const removeErr = ref<string | null>(null);
+async function removeRun(mode: "archive" | "delete") {
+  removeErr.value = null;
+  const what =
+    mode === "archive"
+      ? "Archive this run? Its worktrees and sessions are removed (branches stay); artifacts and history move to runs/.archive and still count in Analytics."
+      : "Delete this run permanently? Its worktrees, artifacts, history and sessions are removed (branches stay).";
+  if (!window.confirm(what)) return;
+  const call = (force: boolean) => (mode === "archive" ? api.archiveRun(props.id, force) : api.deleteRun(props.id, force));
+  try {
+    await call(false);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/uncommitted changes/.test(msg) || !window.confirm(`${msg}\n\nDiscard those changes and continue?`)) {
+      removeErr.value = msg;
+      return;
+    }
+    try {
+      await call(true);
+    } catch (e2) {
+      removeErr.value = e2 instanceof Error ? e2.message : String(e2);
+      return;
+    }
+  }
+  await router.push(mode === "archive" ? "/analytics" : "/");
+}
+
 const hasWorktrees = computed(() => detail.value?.repos.some((r) => r.workPath) ?? false);
 const canRemoveWorktrees = computed(() => hasWorktrees.value && ["done", "failed", "paused"].includes(detail.value?.state ?? ""));
 const worktreeMsg = ref<string | null>(null);
@@ -276,6 +310,16 @@ async function removeWorktrees() {
         <button class="warn" @click="skip" :disabled="!detail.pendingApproval">Skip gate</button>
         <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused' || detail.state === 'failed'">Abort</button>
       </div>
+      <div class="row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap">
+        <span class="muted" style="font-size: 12px">Usage export:</span>
+        <a :href="api.exportUrl(detail.runId, 'csv')" download>CSV</a>
+        <a :href="api.exportUrl(detail.runId, 'json')" download>JSON</a>
+        <div class="spacer" />
+        <button @click="removeRun('archive')" :disabled="!canRemove" title="Done, failed, paused or unstarted runs only">Archive</button>
+        <button class="danger" @click="removeRun('delete')" :disabled="!canRemove" title="Done, failed, paused or unstarted runs only">Delete</button>
+      </div>
+      <div v-if="removeErr" class="error" style="margin-top: 6px; white-space: pre-wrap">{{ removeErr }}</div>
+
     </div>
 
     <div class="roles">

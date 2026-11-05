@@ -158,6 +158,7 @@ export interface Overlap {
 type RawRunEvent =
   | { type: "ws.hello"; runId?: string; scope?: string }
   | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
+  | { type: "run.removed"; runId: string; archived: boolean }
   | { type: "run.created"; runId: string; label: string; repoPaths: string[] }
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }
@@ -249,4 +250,48 @@ export function formatTokens(n: number | undefined): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1)}k`;
   return String(v);
+}
+
+export interface RoleStats {
+  role: RoleId;
+  attempts: number;
+  costUsd: number;
+  tokens: number;
+  avgCostPerAttempt: number;
+  avgDurationSec: number | null;
+  byStatus: Partial<Record<AttemptStatus, number>>;
+}
+
+export interface ReasonCount {
+  reason: string;
+  count: number;
+  lastRunId: string;
+}
+
+export interface AnalyticsRunRow {
+  runId: string;
+  label: string;
+  archived: boolean;
+  state: RunState;
+  stacks: string;
+  createdAt: string;
+  durationMin: number | null;
+  costUsd: number;
+  tokens: number;
+  fixIterations: number;
+  attempts: number;
+}
+
+export interface Analytics {
+  runs: number;
+  byState: Partial<Record<RunState, number>>;
+  costUsd: number;
+  tokens: number;
+  avgCostPerDoneRun: number | null;
+  medianDoneDurationMin: number | null;
+  avgFixIterations: number | null;
+  roles: RoleStats[];
+  pauseReasons: ReasonCount[];
+  failureReasons: ReasonCount[];
+  runRows: AnalyticsRunRow[];
 }

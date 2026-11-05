@@ -144,6 +144,16 @@ export async function switchWorktreeBranch(worktreePath: string, branch: string)
   return exists ? "switched" : "created";
 }
 
+/** Paths with uncommitted changes (tracked or untracked) in a worktree, from `git status --porcelain`. */
+export async function uncommittedPaths(worktreePath: string): Promise<string[]> {
+  const r = await runCmd("git", ["status", "--porcelain"], worktreePath);
+  if (r.code !== 0) throw new Error(`git status failed: ${r.stderr.trim()}`);
+  return r.stdout
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop()!.trim());
+}
+
 /** `git worktree remove` (with `--force` to discard uncommitted changes), then prune. */
 export async function removeWorktree(repoPath: string, worktreePath: string, force: boolean): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath];

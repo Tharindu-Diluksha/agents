@@ -11,11 +11,13 @@ import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
 import { detectStacks, STACK_IDS, STACKS } from "../stacks.js";
-import { createRun, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
+import { createRun, listArchivedRuns, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
+import { ATTEMPT_COLUMNS, attemptRows, computeAnalytics, runRows, toCsv } from "../orchestrator/analytics.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
 import {
   abortRun,
   jumpToRole,
+  removeRun,
   removeRunWorkspaces,
   resumeAfterApproval,
   roleSlots,
@@ -324,10 +326,73 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  /** Moves a finished/failed/paused run to runs/.archive (artifacts and history kept, worktrees removed). */
+  app.post<{ Params: { id: string } }>("/api/runs/:id/archive", async (req, reply) => {
+    const parsed = RemoveWorkspacesBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
+      return;
+    }
+    try {
+      await removeRun(req.params.id, "archive", parsed.data.force);
+      reply.send({ ok: true });
+    } catch (err) {
+      reply.code(400).send({ error: "archive_failed", detail: errMsg(err) });
+    }
+  });
+
+  /** Deletes a finished/failed/paused run entirely (worktrees, artifacts, history, sessions). Branches stay. */
+  app.delete<{ Params: { id: string }; Querystring: { force?: string } }>("/api/runs/:id", async (req, reply) => {
+    try {
+      await removeRun(req.params.id, "delete", req.query.force === "true");
+      reply.send({ ok: true });
+    } catch (err) {
+      reply.code(400).send({ error: "delete_failed", detail: errMsg(err) });
+    }
+  });
+
+  /** One run's attempts with cost and usage, as JSON (with a run summary) or CSV. */
+  app.get<{ Params: { id: string }; Querystring: { format?: string } }>("/api/runs/:id/export", async (req, reply) => {
+    const record = loadRun(req.params.id) ?? listArchivedRuns().find((r) => r.runId === req.params.id);
+    if (!record) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    const attempts = attemptRows([record]);
+    if (req.query.format === "csv") {
+      reply
+        .header("content-type", "text/csv; charset=utf-8")
+        .header("content-disposition", `attachment; filename="${record.runId}-usage.csv"`)
+        .send(toCsv(attempts, ATTEMPT_COLUMNS));
+      return;
+    }
+    reply
+      .header("content-disposition", `attachment; filename="${record.runId}-usage.json"`)
+      .send({ run: runRows([record])[0], attempts });
+  });
+
+  /** Cross-run analytics (cost, tokens, fix loops, per-role stats, top pause/failure reasons). */
+  app.get<{ Querystring: { archived?: string } }>("/api/analytics", async (req) => {
+    return computeAnalytics(runsForAnalytics(req.query.archived !== "false"));
+  });
+
+  /** Every attempt of every run (archived included by default) as CSV. */
+  app.get<{ Querystring: { archived?: string } }>("/api/analytics/export.csv", async (req, reply) => {
+    const rows = attemptRows(runsForAnalytics(req.query.archived !== "false"));
+    reply
+      .header("content-type", "text/csv; charset=utf-8")
+      .header("content-disposition", `attachment; filename="orchestrator-usage.csv"`)
+      .send(toCsv(rows, ATTEMPT_COLUMNS));
+  });
+
   app.post<{ Params: { id: string } }>("/api/runs/:id/abort", async (req, reply) => {
     abortRun(req.params.id);
     reply.send({ ok: true });
   });
+}
+
+function runsForAnalytics(includeArchived: boolean) {
+  return [...listRuns(), ...(includeArchived ? listArchivedRuns() : [])];
 }
 
 function errMsg(err: unknown): string {

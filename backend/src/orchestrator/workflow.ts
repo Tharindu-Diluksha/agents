@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { config, paths } from "../config.js";
-import { emit } from "../events.js";
+import { emit, forgetEventLog } from "../events.js";
 import { log } from "../log.js";
 import { runRoleAgent } from "../sdk/runRole.js";
 import { roles as roleRegistry } from "../roles/index.js";
@@ -20,7 +20,7 @@ import { refreshOverlaps } from "./overlaps.js";
 import { syncWithBase } from "../external/git.js";
 import { prepareWorkspaces, removeWorkspaces, setFeatureBranch, usesWorktrees, workDir, type RemoveResult } from "./workspaces.js";
 import { proposeBranches, readProposedBranches, writeProposedBranches, type BranchProposal } from "./branches.js";
-import { latestAttempt, loadRun, saveRun, startAttempt, totalCostUsd, transition } from "./runStore.js";
+import { archiveDir, forgetRun, latestAttempt, loadRun, saveRun, startAttempt, totalCostUsd, transition } from "./runStore.js";
 import type { ApprovalAction, PendingApproval, RoleAttempt, RoleId, RoleOutput, RunRecord, RunState } from "./types.js";
 
 /*
@@ -132,6 +132,47 @@ export async function removeRunWorkspaces(runId: string, force: boolean): Promis
     log.info("workflow.worktree_removed", { runId, repo: r.repoPath, workPath: r.workPath, removed: r.removed, err: r.error });
   }
   return results;
+}
+
+/**
+ * Archives (moves to runs/.archive/, keeping artifacts and the event log) or
+ * deletes a run. Its worktrees are removed first (branches stay), which also
+ * frees its port block; SDK session ids are deleted. Only for runs that are
+ * done, failed, paused or never started, and not while a role is running.
+ * Without `force`, a worktree with uncommitted changes stops the operation.
+ */
+export async function removeRun(runId: string, mode: "archive" | "delete", force: boolean): Promise<void> {
+  const record = mustLoad(runId);
+  if (inFlight.has(runId)) throw new Error("a role is still running in this run; abort it first");
+  if (!["done", "failed", "paused", "created"].includes(record.state)) {
+    throw new Error(`only done, failed, paused or unstarted runs can be ${mode}d (state: ${record.state})`);
+  }
+  const results = await removeWorkspaces(record, force);
+  saveRun(record);
+  const kept = results.filter((r) => !r.removed);
+  if (kept.length > 0) {
+    throw new Error(
+      `worktree not removed (uncommitted changes?): ${kept.map((r) => `${r.workPath}: ${r.error}`).join("; ")}. Retry with force to discard them.`,
+    );
+  }
+  await refreshOverlaps(record); // other runs no longer overlap this one
+
+  const dir = runDir(runId);
+  if (mode === "archive") {
+    mkdirSync(archiveDir(), { recursive: true });
+    const target = join(archiveDir(), runId);
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+    renameSync(dir, target);
+  } else {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  rmSync(join(paths.sessionsDir, runId), { recursive: true, force: true });
+  rmSync(join(paths.worktreesDir, runId), { recursive: true, force: true });
+  forgetRun(runId);
+  forgetEventLog(runId);
+  log.info("workflow.run_removed", { runId, mode });
+  // Not persisted (the run folder is gone); live listeners update their lists.
+  emit({ type: "run.removed", runId, archived: mode === "archive" });
 }
 
 /** Re-entry used by startup recovery: re-issues the role for the current state. */

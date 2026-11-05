@@ -19,6 +19,8 @@ export type RunEvent =
   | { type: "role.usage"; runId: string; role: RoleId; usage: AttemptUsage; costUsd: number; final: boolean }
   /** Files this run changes that another active run on the same repo also changes. */
   | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
+  /** The run was archived or deleted and is gone from the run list. */
+  | { type: "run.removed"; runId: string; archived: boolean }
   | { type: "approval.requested"; runId: string; role: RoleId; action: string; summary: string; payloadPaths: string[] }
   | { type: "approval.resolved"; runId: string; role: RoleId; action: string; decision: "approve" | "reject" | "edit" | "skip" };
 
@@ -80,6 +82,11 @@ export function emit(ev: RunEvent): void {
   }
   bus.emit("event", stamped);
   bus.emit(`run:${ev.runId}`, stamped);
+}
+
+/** Forget a run's sequence counter (its log was moved or deleted). */
+export function forgetEventLog(runId: string): void {
+  seqByRun.delete(runId);
 }
 
 /** The last `limit` persisted events of a run, oldest first. */

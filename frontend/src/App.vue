@@ -10,6 +10,8 @@ const { attention, notifyPermission, enableNotifications } = useAttention();
     <header>
       <RouterLink to="/" class="brand">Agent Orchestrator</RouterLink>
       <span class="muted">multi-agent workflow</span>
+      <RouterLink to="/">Runs</RouterLink>
+      <RouterLink to="/analytics">Analytics</RouterLink>
       <div style="flex: 1" />
       <RouterLink v-if="attention.length" to="/" class="chip awaiting" title="Runs waiting for you">
         {{ attention.length }} need{{ attention.length === 1 ? "s" : "" }} attention

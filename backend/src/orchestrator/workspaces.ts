@@ -4,6 +4,8 @@ import { config, paths } from "../config.js";
 import { installDependencies } from "../external/deps.js";
 import {
   addWorktree,
+  isToolchainOutput,
+  uncommittedPaths,
   checkoutOrCreateBranch,
   isWorktreeRoot,
   listWorktrees,
@@ -158,6 +160,11 @@ export function describeHolder(path: string): string {
   return path;
 }
 
+/** A path like `.venv/` or `node_modules/` (git lists untracked dirs with a trailing slash). */
+function isToolchainDir(p: string): boolean {
+  return isToolchainOutput(`${p.replace(/\/+$/, "")}/x`);
+}
+
 export interface RemoveResult {
   repoPath: string;
   workPath: string;
@@ -175,7 +182,14 @@ export async function removeWorkspaces(record: RunRecord, force: boolean): Promi
     if (!repo.workPath) continue;
     const workPath = repo.workPath;
     try {
-      if (existsSync(workPath)) await removeWorktree(repo.path, workPath, force);
+      if (existsSync(workPath)) {
+        // Files the orchestrator put there itself (WORKTREE_COPY_FILES, an
+        // un-ignored .venv…) don't count as the run's uncommitted work.
+        const onlyOurs = (await uncommittedPaths(workPath)).every(
+          (p) => config.worktree.copyFiles.includes(p) || isToolchainOutput(p) || isToolchainDir(p),
+        );
+        await removeWorktree(repo.path, workPath, force || onlyOurs);
+      }
       repo.workPath = null;
       results.push({ repoPath: repo.path, workPath, removed: true });
     } catch (err) {

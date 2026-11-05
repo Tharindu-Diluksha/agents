@@ -692,6 +692,64 @@ describe("parallel runs: ports, overlaps, sync before PR", () => {
   });
 });
 
+describe("housekeeping", () => {
+  async function finishedRun(): Promise<string> {
+    const runId = newRun();
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve");
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve");
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve"); // branch
+    await settle(runId, isGateOrEnd);
+    workflow.abortRun(runId); // → paused, with a worktree and a port block
+    return runId;
+  }
+
+  it("archives a run: worktree and sessions gone, artifacts and history kept, port freed", async () => {
+    const runId = await finishedRun();
+    const wtPath = loadRun(runId)!.repos[0]!.workPath!;
+    const branch = loadRun(runId)!.repos[0]!.branch!;
+    mkdirSync(join(tmp, "sessions", runId), { recursive: true });
+    await workflow.removeRun(runId, "archive", false);
+
+    expect(existsSync(wtPath)).toBe(false);
+    expect(existsSync(join(tmp, "runs", runId))).toBe(false);
+    expect(existsSync(join(tmp, "sessions", runId))).toBe(false);
+    expect(existsSync(join(tmp, "runs", ".archive", runId, "run.json"))).toBe(true);
+    expect(existsSync(join(tmp, "runs", ".archive", runId, "events.jsonl"))).toBe(true);
+    expect(loadRun(runId)).toBeNull();
+    expect(git(repoPath, "branch", "--list", branch)).toContain(branch); // branch kept
+
+    const { listArchivedRuns, listRuns } = await import("../src/orchestrator/runStore.js");
+    expect(listRuns().some((r) => r.runId === runId)).toBe(false);
+    const archived = listArchivedRuns().find((r) => r.runId === runId)!;
+    expect(archived.archived).toBe(true);
+    expect(archived.ports).toBeNull();
+  });
+
+  it("deletes a run, refusing dirty worktrees unless forced", async () => {
+    const runId = await finishedRun();
+    const wtPath = loadRun(runId)!.repos[0]!.workPath!;
+    writeFileSync(join(wtPath, "wip.txt"), "x");
+    await expect(workflow.removeRun(runId, "delete", false)).rejects.toThrow(/uncommitted changes/);
+    expect(existsSync(join(tmp, "runs", runId))).toBe(true);
+    await workflow.removeRun(runId, "delete", true);
+    expect(existsSync(join(tmp, "runs", runId))).toBe(false);
+    expect(existsSync(wtPath)).toBe(false);
+  });
+
+  it("refuses to remove a run that is still in progress", async () => {
+    const runId = newRun();
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await expect(workflow.removeRun(runId, "archive", false)).rejects.toThrow(/only done, failed, paused or unstarted/);
+  });
+});
+
 describe("state tables", () => {
   it("every running state maps to a role and back", () => {
     const running: RunState[] = [

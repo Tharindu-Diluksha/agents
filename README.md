@@ -78,6 +78,18 @@ The launch dialog's JIRA tab shows the configured server and has a **Test connec
 
 `plugins/jira-to-pr/` packages the same workflow as a **Claude Code plugin**: one skill (`/jira-to-pr:run <ticket or description>`) whose main session orchestrates seven role subagents, with approvals in chat instead of this UI. It uses the same artifact templates, so you can run both on the same ticket and compare cost and results. The app keeps the stronger guard rails (enforced allowlists, worktrees, budgets). See [plugins/jira-to-pr/README.md](plugins/jira-to-pr/README.md) for install, models and the comparison guide.
 
+## Housekeeping and analytics
+
+- **Archive / Delete** on a finished, failed, paused or unstarted run removes its worktrees (branches stay), sessions and port block.
+  - Archive moves its artifacts and history to `runs/.archive/`, where they still count in Analytics.
+  - Delete removes everything.
+  - Uncommitted work in a worktree needs a confirmation. Files the orchestrator copied in, and dependency folders, don't count as uncommitted work.
+- **Analytics** (header link) shows totals across runs (cost, tokens, average cost per finished run, median time to done, average fix loops), plus:
+  - a per-role table: attempts, cost share, average cost and duration, outcomes;
+  - the most common pause and failure reasons, linked to the latest run;
+  - a table of all runs.
+- **Exports:** each run's attempts with cost and tokens as CSV or JSON (run page or Analytics), and every attempt across all runs as one CSV. Use these to compare with the plugin's `ledger.md`.
+
 ## Supported stacks
 
 TypeScript/Node, Node (JS), Vue, React, C#/.NET, Python and Go. The launch dialog detects each repo's stack from its files (you can override it). The stack decides:
