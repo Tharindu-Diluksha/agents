@@ -1,5 +1,11 @@
-# Local Keycloak + Postgres for the orchestrator's AUTH_MODE=keycloak.
-#   docker compose -f deploy/docker-compose.yml up -d
+# Keycloak + Postgres for the orchestrator's AUTH_MODE=keycloak, and
+# optionally the orchestrator itself ("server mode").
+#
+#   Auth only (orchestrator runs on your machine with `npm run dev`):
+#     docker compose -f deploy/docker-compose.yml up -d
+#   Everything in containers (copy deploy/server.env.example to deploy/server.env first):
+#     docker compose -f deploy/docker-compose.yml --profile server up -d --build
+#
 # Keycloak admin console: http://localhost:8080 (admin / admin)
 # The "orchestrator" realm, its client and dev users are imported on first start
 # from deploy/keycloak/orchestrator-realm.json. See deploy/README.md.
@@ -42,5 +48,38 @@ services:
       postgres:
         condition: service_healthy
 
+  # Server mode: backend + UI in one container. Runs are launched by Git URL;
+  # clones, worktrees, run state and Claude Code's session history live in the
+  # orchestrator-data volume. Secrets come from deploy/server.env (values set
+  # under `environment:` below win over it).
+  orchestrator:
+    profiles: ["server"]
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    image: agent-orchestrator:local
+    env_file:
+      - path: ./server.env
+        required: false
+    environment:
+      AUTH_MODE: keycloak
+      # Browsers and tokens use the public Keycloak URL; the backend reaches
+      # Keycloak over the compose network.
+      KEYCLOAK_ISSUER: ${KEYCLOAK_URL:-http://localhost:8080}/realms/orchestrator
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      PUBLIC_URL: ${ORCHESTRATOR_URL:-http://localhost:5174}
+      DATABASE_URL: postgres://orchestrator:orchestrator@postgres:5432/orchestrator
+    ports:
+      - "${ORCHESTRATOR_PORT:-5174}:5174"
+    volumes:
+      - orchestrator-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  orchestrator-data:

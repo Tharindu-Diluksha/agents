@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { paths } from "../config.js";
 import { ROLES, type RepoTarget, type RoleId, type RunRecord } from "./types.js";
 
@@ -42,9 +42,27 @@ export function readArtifact(absPath: string): string | null {
   return readFileSync(absPath, "utf8");
 }
 
-/** Convert an absolute artifact path to a repo-relative POSIX-style path for UI display. */
+/**
+ * Convert an absolute artifact path to a short POSIX-style path for display:
+ * `runs/<runId>/…` for anything under the runs folder (wherever RUNS_DIR puts
+ * it), otherwise relative to the orchestrator root.
+ */
 export function toRelative(absPath: string): string {
+  const inRuns = relative(paths.runsDir, absPath);
+  if (inRuns && !inRuns.startsWith("..") && !isAbsolute(inRuns)) return `runs/${inRuns.split(sep).join("/")}`;
   return relative(paths.repoRoot, absPath).split("\\").join("/");
+}
+
+/**
+ * Resolve an artifact reference from a role's output or a pending approval:
+ * absolute paths as-is, `runs/…` under the runs folder, anything else
+ * against the orchestrator root (older runs stored repo-relative paths).
+ */
+export function resolveArtifactRef(ref: string): string {
+  if (isAbsolute(ref)) return ref;
+  const posix = ref.split("\\").join("/");
+  if (posix.startsWith("runs/")) return join(paths.runsDir, posix.slice("runs/".length));
+  return resolve(paths.repoRoot, ref);
 }
 
 export type ArtifactOwner = RoleId | "orchestrator";
@@ -94,7 +112,7 @@ export function artifactPath(record: RunRecord, role: ArtifactOwner, name: strin
   return join(roleArtifactDir(record.runId, role), name);
 }
 
-/** POSIX-relative path (handy for prompts). */
+/** Display path of an artifact (see toRelative). Prompts use the absolute artifactPath. */
 export function artifactRelative(record: RunRecord, role: ArtifactOwner, name: string): string {
   return toRelative(artifactPath(record, role, name));
 }

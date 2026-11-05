@@ -25,8 +25,11 @@ export const paths = {
   repoRoot: resolve(here, "..", ".."),
   rolesDir: resolve(here, "..", "..", "roles"),
   templatesDir: resolve(here, "..", "..", "templates"),
-  runsDir: resolve(here, "..", "..", "runs"),
-  sessionsDir: resolve(here, "..", "..", "sessions"),
+  // State folders. Overridable so a container can keep them on volumes.
+  runsDir: process.env.RUNS_DIR ? resolve(process.env.RUNS_DIR) : resolve(here, "..", "..", "runs"),
+  sessionsDir: process.env.SESSIONS_DIR ? resolve(process.env.SESSIONS_DIR) : resolve(here, "..", "..", "sessions"),
+  /** Clones of repos launched by Git URL: <reposDir>/<host>/<owner>/<repo>. */
+  reposDir: process.env.REPOS_DIR ? resolve(process.env.REPOS_DIR) : resolve(here, "..", "..", "repos"),
   /** Per-run git worktrees: <worktreesDir>/<runId>/<repoSlug>. */
   worktreesDir: process.env.WORKTREES_DIR ? resolve(process.env.WORKTREES_DIR) : resolve(here, "..", "..", "worktrees"),
   frontendDist: resolve(here, "..", "..", "frontend", "dist"),
@@ -99,6 +102,22 @@ export const config = {
   /** Bring the branch up to date with its base (rebase, or merge once pushed) before the PR Creator runs. */
   syncBaseBeforePr: (process.env.SYNC_BASE_BEFORE_PR ?? "true").toLowerCase() !== "false",
   auth: authConfig(),
+  repoSources: {
+    /**
+     * Allow launching on a checkout path that already exists on this machine.
+     * Turn off on a shared server (server mode), where operators must not
+     * point agents at arbitrary server folders.
+     */
+    allowLocalPaths: (process.env.ALLOW_LOCAL_REPO_PATHS ?? "true").toLowerCase() !== "false",
+    /**
+     * Git URL prefixes runs may clone, e.g. "https://github.com/acme/,git@github.com:acme/".
+     * Empty = any https/ssh URL.
+     */
+    allowedUrlPrefixes: (process.env.ALLOWED_REPO_URLS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
   /** Postgres for login sessions and the audit log. Required when AUTH_MODE=keycloak; optional otherwise (audit only). */
   databaseUrl: process.env.DATABASE_URL ?? "",
   branchNameTemplate: process.env.BRANCH_NAME_TEMPLATE ?? "feature/{ticket}-{slug}",
@@ -116,6 +135,13 @@ function authConfig() {
     issuer: process.env.KEYCLOAK_ISSUER ?? "",
     clientId: process.env.KEYCLOAK_CLIENT_ID ?? "orchestrator-web",
     clientSecret: process.env.KEYCLOAK_CLIENT_SECRET ?? "",
+    /**
+     * Optional: how the backend itself reaches Keycloak when that differs from
+     * the issuer URL browsers use (e.g. http://keycloak:8080 inside Docker
+     * Compose while browsers use http://localhost:8080). Back-channel requests
+     * are sent there; the issuer and browser redirects keep KEYCLOAK_ISSUER.
+     */
+    internalUrl: (process.env.KEYCLOAK_INTERNAL_URL ?? "").replace(/\/+$/, ""),
     /** URL users open in the browser (redirect URIs are built from it). */
     publicUrl: (process.env.PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/+$/, ""),
     /** ≥ 32 chars. Encrypts refresh tokens at rest and the short-lived login cookie. */

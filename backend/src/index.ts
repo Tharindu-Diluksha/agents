@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { config, paths, validateAuthConfig } from "./config.js";
 import { buildApp } from "./app.js";
 import { NoAuditLog, PostgresAuditLog } from "./auth/audit.js";
-import { createDb, migrate } from "./auth/db.js";
+import { acquireDbInstanceLock, createDb, migrate } from "./auth/db.js";
 import { OidcClient } from "./auth/oidc.js";
 import { MemorySessionStore, PostgresSessionStore } from "./auth/sessions.js";
 import { setAuditLog } from "./orchestrator/activity.js";
@@ -37,6 +37,16 @@ async function main() {
 
   validateAuthConfig(config);
   const { db, sessions, audit, oidc } = await setupAuthBackends();
+  if (db) {
+    // A second guard for containers sharing a database: the file lock above covers the state folder.
+    try {
+      const releaseDbLock = await acquireDbInstanceLock(db);
+      process.on("exit", () => void releaseDbLock());
+    } catch (err) {
+      log.error("backend.already_running", { err: err instanceof Error ? err.message : String(err) });
+      process.exit(1);
+    }
+  }
   setAuditLog(audit);
 
   const { app, auth } = await buildApp({
@@ -77,6 +87,7 @@ async function setupAuthBackends() {
     issuer: config.auth.issuer,
     clientId: config.auth.clientId,
     clientSecret: config.auth.clientSecret,
+    internalUrl: config.auth.internalUrl || undefined,
     redirectUri: `${config.auth.publicUrl}/auth/callback`,
     postLogoutRedirectUri: `${config.auth.publicUrl}/`,
   });

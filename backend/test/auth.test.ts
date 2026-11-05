@@ -241,3 +241,50 @@ describe("WebSockets and logout", () => {
     expect((await app.inject({ url: "/api/runs", headers: { ...H, cookie: `orch_session=${session}` } })).statusCode).toBe(401);
   });
 });
+
+describe("Keycloak behind a different internal URL (Docker Compose)", () => {
+  it("logs in when the backend reaches the provider only through KEYCLOAK_INTERNAL_URL", async () => {
+    // Browsers use http://keycloak.public.test:8080 (doesn't resolve here); the backend uses the internal address.
+    const pub = await startFakeOidc(CLIENT, SECRET, { publicBase: "http://keycloak.public.test:8080" });
+    const { internalRewriter } = await import("../src/auth/oidc.js");
+    expect(internalRewriter(pub.issuer, pub.internalBase)!(`${pub.issuer}/token`)).toBe(`${pub.internalBase}/realms/test/token`);
+    expect(internalRewriter(pub.issuer, pub.internalBase)!("https://elsewhere.example/x")).toBe("https://elsewhere.example/x");
+
+    const { app: app2 } = await buildApp({
+      allowedHosts: [],
+      serveFrontend: false,
+      auth: {
+        mode: "keycloak",
+        sessions: new MemorySessionStore(),
+        audit: audit as never,
+        oidc: new OidcClient({
+          issuer: pub.issuer,
+          internalUrl: pub.internalBase,
+          clientId: CLIENT,
+          clientSecret: SECRET,
+          redirectUri: `${PUBLIC}/auth/callback`,
+          postLogoutRedirectUri: `${PUBLIC}/`,
+        }),
+        sessionSecret: "y".repeat(40),
+        publicUrl: PUBLIC,
+        idleMinutes: 60,
+        maxHours: 24,
+      },
+    });
+    try {
+      const start = await app2.inject({ url: "/auth/login", headers: H });
+      const authorize = new URL(start.headers.location as string);
+      expect(authorize.origin).toBe("http://keycloak.public.test:8080"); // browser goes to the public URL
+      // Simulate the browser reaching the public URL.
+      const atIdp = await fetch(`${pub.internalBase}${authorize.pathname}${authorize.search}`, { redirect: "manual" });
+      const back = new URL(atIdp.headers.get("location")!);
+      const cb = await app2.inject({ url: `${back.pathname}${back.search}`, headers: { ...H, cookie: `orch_login=${cookieOf(start, "orch_login")}` } });
+      expect(cb.statusCode, cb.body).toBe(302);
+      const me = await app2.inject({ url: "/auth/me", headers: { ...H, cookie: `orch_session=${cookieOf(cb, "orch_session")}` } });
+      expect(me.json().user.name).toBe("Ada Lovelace");
+    } finally {
+      await app2.close();
+      await pub.close();
+    }
+  });
+});

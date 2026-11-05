@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { paths } from "../config.js";
 import {
   artifactPath as perRoleArtifactPath,
   artifactRelative as perRoleArtifactRelative,
@@ -16,8 +17,18 @@ export function artifactPath(record: RunRecord, role: ArtifactOwner, name: strin
   return perRoleArtifactPath(record, role, name);
 }
 
+/**
+ * Path of an artifact as given to a role: absolute, because a role's cwd is a
+ * worktree (or its own artifact folder) and the runs folder may live anywhere
+ * (RUNS_DIR). The UI shows the short form; see artifacts.ts :: toRelative.
+ */
 export function artifactRelative(record: RunRecord, role: ArtifactOwner, name: string): string {
-  return perRoleArtifactRelative(record, role, name);
+  return perRoleArtifactPath(record, role, name);
+}
+
+/** Absolute path of an artifact template (templates/<name>), for prompts. */
+export function templateRef(name: string): string {
+  return join(paths.templatesDir, name);
 }
 
 export function headerFor(record: RunRecord, roleHuman: string): string {
@@ -66,7 +77,7 @@ export function primaryRepo(record: RunRecord): RepoTarget {
 export function maybeAttach(record: RunRecord, role: ArtifactOwner, name: string, label: string): string {
   const body = readArtifact(artifactPath(record, role, name));
   if (!body) return "";
-  const rel = artifactRelative(record, role, name);
+  const rel = perRoleArtifactRelative(record, role, name);
   return `\n\n## ${label} (\`${rel}\`)\n\n${body.trim()}\n`;
 }
 

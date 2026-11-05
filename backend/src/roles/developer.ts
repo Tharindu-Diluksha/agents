@@ -7,7 +7,8 @@ import {  aiGuidelineSection,
   maybeAttach,
   orchestratorSection,
   primaryRepo,
-  bashBoundaryLine, stackSection
+  bashBoundaryLine, stackSection,
+  templateRef,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -56,8 +57,8 @@ export const developer: RoleSpec = {
     if (planning) {
       lines.push(
         "1. Confirm existing tests pass: run the repo's unit test command. If anything is red before you touch the code, emit `status: \"blocked\"` describing which tests failed. Do NOT proceed.",
-        `2. Write an ADR to \`${adrPath}\` using \`templates/adr.md\`.`,
-        `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. List every file to touch, and fill in the **Test plan** section: the unit tests (per AC-id) the Unit Tester will write first, and the integration points the Integration Tester should cover.`,
+        `2. Write an ADR to \`${adrPath}\` using \`${templateRef("adr.md")}\`.`,
+        `3. Write an implementation plan to \`${planPath}\` using \`${templateRef("impl-plan.md")}\`. List every file to touch, and fill in the **Test plan** section: the unit tests (per AC-id) the Unit Tester will write first, and the integration points the Integration Tester should cover.`,
         "4. End your turn with `approvalRequest.action: \"proceed_to_next\"` so the user can approve the plan. Do NOT implement in this phase.",
         "",
         "## Required reading",

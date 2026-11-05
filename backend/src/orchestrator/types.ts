@@ -108,6 +108,8 @@ export interface RepoTarget {
   branch?: string | null;
   /** Ref the worktree started from (`origin/<base>` or `<base>`); diffs compare against it. */
   baseRef?: string | null;
+  /** Git URL the run was launched with (server mode); `path` is then the orchestrator's clone. */
+  url?: string | null;
   /** Tech stacks of this repo, primary first (detected at launch or chosen). Absent = TypeScript (older runs). */
   stacks?: StackId[];
 }

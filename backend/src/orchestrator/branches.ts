@@ -4,6 +4,7 @@ import { config, paths } from "../config.js";
 import { branchExists } from "../external/git.js";
 import { describeHolder, usesWorktrees, worktreeHoldingBranch } from "./workspaces.js";
 import { log } from "../log.js";
+import { roleArtifactDir, toRelative } from "./artifacts.js";
 import type { RunRecord } from "./types.js";
 
 export interface BranchProposal {
@@ -92,11 +93,10 @@ export async function proposeBranches(record: RunRecord): Promise<BranchProposal
 }
 
 export function writeProposedBranches(runId: string, proposals: BranchProposal[]): string {
-  const relative = `runs/${runId}/orchestrator/proposed-branches.json`;
-  const abs = join(paths.repoRoot, relative);
+  const abs = join(roleArtifactDir(runId, "orchestrator"), "proposed-branches.json");
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, JSON.stringify({ perRepo: proposals }, null, 2), "utf8");
-  return relative;
+  return toRelative(abs);
 }
 
 export function readProposedBranches(runId: string): BranchProposal[] | null {

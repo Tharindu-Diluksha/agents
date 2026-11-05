@@ -294,7 +294,7 @@ async function removeWorktrees() {
       </div>
       <div class="muted mono" style="margin-top: 4px">
         <div v-for="repo in detail.repos" :key="repo.path">
-          {{ repo.path }} (<span v-if="repo.stacks?.length">{{ repo.stacks.join(" + ") }}, </span>base: {{ repo.baseBranch }}<span v-if="repo.branch">, branch: {{ repo.branch }}</span><span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
+          {{ repo.url ?? repo.path }} (<span v-if="repo.stacks?.length">{{ repo.stacks.join(" + ") }}, </span>base: {{ repo.baseBranch }}<span v-if="repo.branch">, branch: {{ repo.branch }}</span><span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
           <div v-if="repo.workPath" style="font-size: 11px">↳ worktree: {{ repo.workPath }}</div>
         </div>
         <div v-if="detail.workspace === 'in-place'" style="font-size: 11px">This run predates per-run worktrees and works in the checkout directly.</div>

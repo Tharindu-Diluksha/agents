@@ -26,14 +26,20 @@ export interface FakeOidc {
   close(): Promise<void>;
 }
 
-export async function startFakeOidc(clientId: string, clientSecret: string): Promise<FakeOidc> {
+/**
+ * `publicBase` makes the provider advertise an issuer on another origin than
+ * the one it listens on (like Keycloak behind KC_HOSTNAME in Docker Compose);
+ * `internalBase` is then where it is actually reachable.
+ */
+export async function startFakeOidc(clientId: string, clientSecret: string, opts: { publicBase?: string } = {}): Promise<FakeOidc & { internalBase: string }> {
   const { publicKey, privateKey } = await generateKeyPair("RS256");
   const jwk: JWK = { ...(await exportJWK(publicKey)), kid: "k1", alg: "RS256", use: "sig" };
   const codes = new Map<string, { nonce: string; challenge: string; redirectUri: string }>();
   const refresh = new Map<string, string>(); // token -> sub
   let server: Server;
 
-  const state: FakeOidc = {
+  const state: FakeOidc & { internalBase: string } = {
+    internalBase: "",
     issuer: "",
     user: { sub: "u-1", name: "Ada Lovelace", email: "ada@example.com", roles: ["viewer", "default-roles-test"] },
     revokeAll: false,
@@ -55,12 +61,12 @@ export async function startFakeOidc(clientId: string, clientSecret: string): Pro
   }
 
   server = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", state.issuer);
+    const url = new URL(req.url ?? "/", state.internalBase);
     const send = (code: number, body: unknown, headers: Record<string, string> = {}) => {
       res.writeHead(code, { "content-type": "application/json", ...headers });
       res.end(JSON.stringify(body));
     };
-    const path = url.pathname.replace(new URL(state.issuer).pathname, "");
+    const path = url.pathname.replace("/realms/test", "");
     if (path === "/.well-known/openid-configuration") {
       return send(200, {
         issuer: state.issuer,
@@ -121,6 +127,7 @@ export async function startFakeOidc(clientId: string, clientSecret: string): Pro
   });
 
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  state.issuer = `http://127.0.0.1:${(server.address() as { port: number }).port}/realms/test`;
+  state.internalBase = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  state.issuer = `${opts.publicBase ?? state.internalBase}/realms/test`;
   return state;
 }
