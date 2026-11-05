@@ -1,5 +1,6 @@
 import { onBeforeUnmount, ref } from "vue";
 import type { RunEvent } from "../types.js";
+import { redirectToLogin } from "../auth.js";
 
 export function useRunSocket(runId: string, onEvent: (ev: RunEvent) => void) {
   const connected = ref(false);
@@ -12,7 +13,11 @@ export function useRunSocket(runId: string, onEvent: (ev: RunEvent) => void) {
     ws.onopen = () => {
       connected.value = true;
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+      if (ev.code === 4401) {
+        redirectToLogin();
+        return;
+      }
       connected.value = false;
       reconnectTimer = window.setTimeout(connect, 1500);
     };

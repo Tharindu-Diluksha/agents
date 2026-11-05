@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { config, paths } from "../config.js";
 import { emit, readEventLog } from "../events.js";
+import { auditLog, recordActivity } from "../orchestrator/activity.js";
 import { refreshOverlaps } from "../orchestrator/overlaps.js";
 import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
@@ -187,7 +188,9 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       source,
       repos,
       models: Object.keys(models).length > 0 ? models : undefined,
+      createdBy: { sub: req.user!.sub, name: req.user!.name },
     });
+    await recordActivity(runId, req.user!, "launch", { source: source.kind, repos: repos.map((r) => r.path) }, req.ip);
 
     emit({ type: "run.created", runId, label, repoPaths: repos.map((r) => r.path) });
     try {
@@ -213,6 +216,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       overlaps: r.overlaps ?? [],
       pauseReason: r.pauseReason,
       failureReason: r.failureReason,
+      createdBy: r.createdBy,
     }));
     return { runs };
   });
@@ -255,7 +259,17 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
       return;
     }
+    const gate = loadRun(req.params.id)?.pendingApproval;
     try {
+      if (gate) {
+        await recordActivity(
+          req.params.id,
+          req.user!,
+          parsed.data.decision === "approve" ? "approve" : parsed.data.decision,
+          { gate: gate.action, role: gate.role, ...(parsed.data.feedback ? { feedback: parsed.data.feedback.slice(0, 500) } : {}), ...(parsed.data.editedPayload ? { edited: true } : {}) },
+          req.ip,
+        );
+      }
       await resumeAfterApproval(
         req.params.id,
         parsed.data.decision,
@@ -270,7 +284,9 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { id: string } }>("/api/runs/:id/skip", async (req, reply) => {
     try {
+      const from = loadRun(req.params.id)?.state;
       await skipCurrent(req.params.id);
+      await recordActivity(req.params.id, req.user!, "skip", { from }, req.ip);
       reply.send({ ok: true });
     } catch (err) {
       reply.code(400).send({ error: "skip_failed", detail: errMsg(err) });
@@ -285,6 +301,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     }
     try {
       await jumpToRole(req.params.id, parsed.data.to as RoleId);
+      await recordActivity(req.params.id, req.user!, "jump", { to: parsed.data.to }, req.ip);
       reply.send({ ok: true });
     } catch (err) {
       reply.code(400).send({ error: "jump_failed", detail: errMsg(err) });
@@ -320,6 +337,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     }
     try {
       const results = await removeRunWorkspaces(req.params.id, parsed.data.force);
+      await recordActivity(req.params.id, req.user!, "remove_worktrees", { force: parsed.data.force, removed: results.filter((r) => r.removed).length }, req.ip);
       reply.send({ results });
     } catch (err) {
       reply.code(400).send({ error: "remove_failed", detail: errMsg(err) });
@@ -334,6 +352,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
     try {
+      await recordActivity(req.params.id, req.user!, "archive", { force: parsed.data.force }, req.ip);
       await removeRun(req.params.id, "archive", parsed.data.force);
       reply.send({ ok: true });
     } catch (err) {
@@ -345,6 +364,8 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string }; Querystring: { force?: string } }>("/api/runs/:id", async (req, reply) => {
     try {
       await removeRun(req.params.id, "delete", req.query.force === "true");
+      // The run folder is gone; this lands in the audit log only.
+      await recordActivity(req.params.id, req.user!, "delete", { force: req.query.force === "true" }, req.ip);
       reply.send({ ok: true });
     } catch (err) {
       reply.code(400).send({ error: "delete_failed", detail: errMsg(err) });
@@ -387,7 +408,25 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { id: string } }>("/api/runs/:id/abort", async (req, reply) => {
     abortRun(req.params.id);
+    await recordActivity(req.params.id, req.user!, "abort", {}, req.ip);
     reply.send({ ok: true });
+  });
+
+  /** Audit log (admins): who did what, including logins, denials and actions on deleted runs. */
+  app.get<{ Querystring: { limit?: string; before?: string; runId?: string; user?: string; action?: string } }>("/api/audit", async (req) => {
+    const audit = auditLog();
+    if (!audit.enabled) return { enabled: false, entries: [] };
+    const q = req.query;
+    return {
+      enabled: true,
+      entries: await audit.list({
+        limit: q.limit ? Number(q.limit) : undefined,
+        before: q.before ? Number(q.before) : undefined,
+        runId: q.runId || undefined,
+        userSub: q.user || undefined,
+        action: q.action || undefined,
+      }),
+    };
   });
 }
 

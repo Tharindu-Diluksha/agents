@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api } from "../api.js";
+import { can, needs } from "../auth.js";
 import type { PendingApproval, ProposedBranches } from "../types.js";
 
 const props = defineProps<{ runId: string; pending: PendingApproval }>();
@@ -150,11 +151,12 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
     <p v-if="err" class="error">{{ err }}</p>
 
     <div class="row" style="margin-top: 12px">
-      <button class="danger" @click="act('reject')" :disabled="busy">{{ rejectLabel() }}</button>
-      <button v-if="!isBranchApproval" @click="act('skip')" :disabled="busy">Skip</button>
+      <span v-if="!can('approver')" class="muted" style="font-size: 12px">Only approvers can decide this gate.</span>
+      <button class="danger" @click="act('reject')" :disabled="busy || !can('approver')" :title="needs('approver')">{{ rejectLabel() }}</button>
+      <button v-if="!isBranchApproval" @click="act('skip')" :disabled="busy || !can('approver')" :title="needs('approver')">Skip</button>
       <div class="spacer" />
-      <button v-if="canEditMarkdown() && edited !== null" @click="act('edit')" :disabled="busy">Approve edited</button>
-      <button class="primary" @click="act('approve')" :disabled="busy">{{ approveLabel() }}</button>
+      <button v-if="canEditMarkdown() && edited !== null" @click="act('edit')" :disabled="busy || !can('approver')" :title="needs('approver')">Approve edited</button>
+      <button class="primary" @click="act('approve')" :disabled="busy || !can('approver')" :title="needs('approver')">{{ approveLabel() }}</button>
     </div>
   </div>
 </template>

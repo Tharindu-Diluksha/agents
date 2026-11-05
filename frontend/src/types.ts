@@ -105,6 +105,7 @@ export interface RunSummary {
   pendingApproval: PendingApproval | null;
   totalCostUsd: number;
   totalUsage: AttemptUsage;
+  createdBy?: { sub: string; name: string };
   overlaps?: Overlap[];
   pauseReason?: string;
   failureReason?: string;
@@ -132,7 +133,27 @@ export interface RoleAttempt {
   usage?: AttemptUsage;
 }
 
+export interface ActivityEntry {
+  at: string;
+  by: { sub: string; name: string };
+  action: string;
+  details?: Record<string, unknown>;
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  userSub: string | null;
+  userName: string | null;
+  action: string;
+  runId: string | null;
+  outcome: "ok" | "denied" | "failed";
+  details: Record<string, unknown>;
+  ip: string | null;
+}
+
 export interface RunDetail extends RunSummary {
+  activity?: ActivityEntry[];
   workspace?: "worktree" | "in-place";
   ports?: { base: number; count: number } | null;
   roles: Partial<Record<RoleId, RoleAttempt[]>>;
@@ -159,6 +180,7 @@ type RawRunEvent =
   | { type: "ws.hello"; runId?: string; scope?: string }
   | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
   | { type: "run.removed"; runId: string; archived: boolean }
+  | { type: "run.activity"; runId: string; entry: ActivityEntry }
   | { type: "run.created"; runId: string; label: string; repoPaths: string[] }
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }

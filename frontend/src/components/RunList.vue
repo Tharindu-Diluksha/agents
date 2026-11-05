@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import { api } from "../api.js";
+import { can, needs } from "../auth.js";
 import { useRouter } from "vue-router";
 import { useRunsStore } from "../stores/runs.js";
 import LaunchRunDialog from "./LaunchRunDialog.vue";
@@ -42,7 +43,7 @@ function onLaunched(runId: string) {
         {{ slots.running }}/{{ slots.limit > 0 ? slots.limit : "∞" }} roles running<template v-if="slots.queued">, {{ slots.queued }} queued</template>
       </span>
       <div class="spacer" />
-      <button class="primary" @click="showDialog = true">Launch new run</button>
+      <button class="primary" @click="showDialog = true" :disabled="!can('operator')" :title="needs('operator')">Launch new run</button>
       <button @click="store.refresh()" :disabled="store.loading">Refresh</button>
     </div>
 
@@ -80,6 +81,7 @@ function onLaunched(runId: string) {
             <div v-if="r.source.kind === 'jira'" class="muted" style="font-size:12px">jira · {{ r.source.ticket }}</div>
             <div v-else class="muted" style="font-size:12px">{{ r.source.type }} · {{ r.source.title }}</div>
             <div class="muted mono" style="font-size:11px">{{ r.runId }}</div>
+            <div v-if="r.createdBy" class="muted" style="font-size:11px">by {{ r.createdBy.name }}</div>
           </td>
           <td>
             <span class="chip" :class="stateChipClass(r.state)">{{ r.state }}</span>

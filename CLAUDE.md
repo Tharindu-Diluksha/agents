@@ -16,7 +16,7 @@ Run everything from the repo root (`agents/`) unless noted:
 - `npm run dev` — Fastify backend on `:5174` + Vite dev server on `:5173` (concurrently).
 - `npm run build` — type-checks and bundles both.
 - `npm run typecheck` — backend `tsc --noEmit` + `vue-tsc --noEmit`.
-- `npm run test` — backend Vitest. `backend/test/workflow.test.ts` drives the full state machine with a scripted fake of `runRoleAgent` (no model calls); `permissions.test.ts` covers the tool guard and each role's Bash allowlist.
+- `npm run test` — backend Vitest. `test/auth.test.ts` runs the real app in `AUTH_MODE=keycloak` against a fake OpenID provider (`test/fakeOidc.ts`); `test/postgres.test.ts` runs only when `TEST_DATABASE_URL` is set (e.g. a `postgres:16-alpine` container). `backend/test/workflow.test.ts` drives the full state machine with a scripted fake of `runRoleAgent` (no model calls); `permissions.test.ts` covers the tool guard and each role's Bash allowlist.
 - Single backend test: `npm --prefix backend run test -- <path-or-pattern>`.
 - Backend only in dev: `npm --prefix backend run dev` (uses `tsx watch`).
 
@@ -53,6 +53,14 @@ Six load-bearing design choices that are easy to miss by reading one file:
 
 ## Where things live
 
+- `backend/src/auth/` — sign-in and permissions (`AUTH_MODE=none|keycloak`, see `deploy/README.md`).
+  - `plugin.ts` registers `/auth/login|callback|logout|me` and an `onRequest` hook that, for every HTTP and WebSocket request, loads the session from the `orch_session` cookie (stored as its SHA-256), enforces idle/absolute expiry, refreshes the access token when it has expired (Keycloak refusing the refresh ends the session and closes its sockets), sets `req.user`, then checks the route's role. In `none` mode `req.user` is a local admin.
+  - `authz.ts :: ROUTE_RULES` maps every `METHOD /route` to `public|viewer|operator|approver|admin`. **Add a rule for every new route**; unlisted /api, /ws and /auth routes are admin-only, and `test/auth.test.ts` fails if a registered route has no rule.
+  - `oidc.ts` wraps openid-client (code + PKCE + state + nonce; roles from the ID-token `roles` claim the realm mapper adds, else `realm_access.roles`). `sessions.ts` (Postgres / memory), `audit.ts` (append-only `audit_log`), `db.ts` (pool + SQL migrations recorded in `schema_migrations`), `crypto.ts` (AES-256-GCM sealing of refresh tokens and the login cookie under `SESSION_SECRET`).
+  - `backend/src/app.ts :: buildApp` assembles the app (websocket plugin → security guard → auth → routes) and returns the route list; `index.ts` wires Postgres/OIDC and a session sweeper.
+  - Attribution: routes call `recordActivity(runId, req.user, action, details)` (`orchestrator/activity.ts`), which appends to `run.activity` (shown on the run page), emits `run.activity`, and writes the audit log. `RunRecord.createdBy` is set at launch.
+  - Frontend: `src/auth.ts` loads `/auth/me` before mounting (redirects to login on 401), `can(role)`/`needs(role)` disable controls; API 401s and WebSocket close code 4401 send the user to login.
+- `deploy/` — `docker-compose.yml` (Postgres 16 + Keycloak 26 `start-dev --import-realm`), `keycloak/orchestrator-realm.json` (roles, client `orchestrator-web` with the roles mapper, dev users alice/bob/carol/dave), `postgres/init.sql`.
 - `backend/src/security.ts` — request guard (registered in `index.ts` **after** `@fastify/websocket`): Host allowlist (blocks DNS rebinding) and Origin allowlist for WebSocket upgrades and non-GET requests (blocks other websites reading `/ws/*` or driving the API). Requests without an Origin (curl) pass. Extra hostnames via `ALLOWED_HOSTS`. Refused upgrades close their socket explicitly, since the websocket plugin's cleanup never runs for them.
 - `backend/src/orchestrator/workflow.ts` — the state machine. Start here when debugging flow bugs.
 - `backend/src/orchestrator/recovery.ts` — startup recovery for mid-flight runs.

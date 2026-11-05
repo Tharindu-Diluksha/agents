@@ -1,15 +1,15 @@
-import Fastify from "fastify";
-import fastifyStatic from "@fastify/static";
-import fastifyWebsocket from "@fastify/websocket";
 import { existsSync, mkdirSync } from "node:fs";
-import { config, paths } from "./config.js";
+import { config, paths, validateAuthConfig } from "./config.js";
+import { buildApp } from "./app.js";
+import { NoAuditLog, PostgresAuditLog } from "./auth/audit.js";
+import { createDb, migrate } from "./auth/db.js";
+import { OidcClient } from "./auth/oidc.js";
+import { MemorySessionStore, PostgresSessionStore } from "./auth/sessions.js";
+import { setAuditLog } from "./orchestrator/activity.js";
 import { log } from "./log.js";
 import { join } from "node:path";
 import { acquireInstanceLock, InstanceLockError } from "./orchestrator/instanceLock.js";
 import { recoverRuns } from "./orchestrator/recovery.js";
-import { registerRunsRoutes } from "./routes/runs.js";
-import { registerRequestGuard } from "./security.js";
-import { registerWsRoutes } from "./routes/ws.js";
 
 async function main() {
   for (const dir of [paths.runsDir, paths.sessionsDir]) {
@@ -35,42 +35,52 @@ async function main() {
     });
   }
 
-  const app = Fastify({ logger: false });
+  validateAuthConfig(config);
+  const { db, sessions, audit, oidc } = await setupAuthBackends();
+  setAuditLog(audit);
 
-  await app.register(fastifyWebsocket);
-  // Host/Origin checks for every request, WebSocket upgrades included.
-  registerRequestGuard(app, config.allowedHosts);
-
-  await registerRunsRoutes(app);
-  await registerWsRoutes(app);
-
-  if (existsSync(paths.frontendDist)) {
-    await app.register(fastifyStatic, {
-      root: paths.frontendDist,
-      prefix: "/",
-    });
-    app.setNotFoundHandler((req, reply) => {
-      if (req.url.startsWith("/api") || req.url.startsWith("/ws")) {
-        reply.code(404).send({ error: "not_found" });
-        return;
-      }
-      reply.sendFile("index.html");
-    });
-  } else {
-    app.get("/", async () => ({
-      status: "backend_only",
-      message: "Frontend not built. Use `npm run dev` from the repo root for the Vue dev server, or run `npm --prefix frontend run build`.",
-    }));
-  }
+  const { app, auth } = await buildApp({
+    allowedHosts: config.allowedHosts,
+    auth: {
+      mode: config.auth.mode,
+      sessions,
+      oidc,
+      audit,
+      sessionSecret: config.auth.sessionSecret,
+      publicUrl: config.auth.publicUrl,
+      idleMinutes: config.auth.idleMinutes,
+      maxHours: config.auth.maxHours,
+    },
+  });
+  const sweeper = setInterval(() => void auth.sweep().catch((err) => log.warn("auth.sweep_failed", { err: String(err) })), 60_000);
+  sweeper.unref();
+  process.on("exit", () => void db?.end());
 
   await app.listen({ port: config.port, host: config.host });
-  log.info("backend.listening", { port: config.port, host: config.host });
+  log.info("backend.listening", { port: config.port, host: config.host, auth: config.auth.mode, audit: audit.enabled });
 
   try {
     recoverRuns();
   } catch (err) {
     log.error("backend.recovery_failed", { err: err instanceof Error ? err.message : String(err) });
   }
+}
+
+/** Postgres (sessions + audit) and the OIDC client, as configured. */
+async function setupAuthBackends() {
+  const db = config.databaseUrl ? createDb(config.databaseUrl) : null;
+  if (db) await migrate(db);
+  const audit = db ? new PostgresAuditLog(db) : new NoAuditLog();
+  if (config.auth.mode !== "keycloak") return { db, sessions: undefined, audit, oidc: undefined };
+  const sessions = config.auth.sessionStore === "memory" || !db ? new MemorySessionStore() : new PostgresSessionStore(db);
+  const oidc = new OidcClient({
+    issuer: config.auth.issuer,
+    clientId: config.auth.clientId,
+    clientSecret: config.auth.clientSecret,
+    redirectUri: `${config.auth.publicUrl}/auth/callback`,
+    postLogoutRedirectUri: `${config.auth.publicUrl}/`,
+  });
+  return { db, sessions, audit, oidc };
 }
 
 main().catch((err) => {

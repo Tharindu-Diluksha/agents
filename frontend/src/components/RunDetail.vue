@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { api } from "../api.js";
+import { can, needs } from "../auth.js";
 import { useRunSocket } from "../composables/useRunSocket.js";
 import {
   addUsage,
@@ -86,7 +87,8 @@ function applyLive(ev: RunEvent) {
     ev.type === "approval.requested" ||
     ev.type === "approval.resolved" ||
     ev.type === "run.failed" ||
-    ev.type === "run.overlaps"
+    ev.type === "run.overlaps" ||
+    ev.type === "run.activity"
   ) {
     refresh();
   }
@@ -195,6 +197,22 @@ async function skip() { await api.skip(props.id); await refresh(); }
 async function jump(to: RoleId) { await api.jump(props.id, to); activeRole.value = to; await refresh(); }
 async function abort() { await api.abort(props.id); await refresh(); }
 
+function activityText(a: { action: string; details?: Record<string, unknown> }): string {
+  const d = a.details ?? {};
+  switch (a.action) {
+    case "launch": return "launched the run";
+    case "approve": return `approved ${d.gate ?? "a gate"}${d.edited ? " (edited)" : ""}`;
+    case "reject": return `rejected ${d.gate ?? "a gate"}${d.feedback ? `: “${d.feedback}”` : ""}`;
+    case "edit": return `approved an edited ${d.gate ?? "payload"}`;
+    case "skip": return `skipped ${d.gate ?? d.from ?? "a gate"}`;
+    case "jump": return `jumped to ${d.to}`;
+    case "abort": return "aborted the run";
+    case "remove_worktrees": return "removed the worktrees";
+    case "archive": return "archived the run";
+    default: return a.action;
+  }
+}
+
 // Archive / delete: only for finished, failed, paused or unstarted runs.
 const router = useRouter();
 const canRemove = computed(() => ["done", "failed", "paused", "created"].includes(detail.value?.state ?? ""));
@@ -257,6 +275,7 @@ async function removeWorktrees() {
         <h2 style="margin:0">{{ detail.label }}</h2>
         <span class="chip" :class="stateCls">{{ detail.state }}</span>
         <span v-if="detail.source.kind === 'manual'" class="chip">{{ detail.source.type }}</span>
+        <span v-if="detail.createdBy" class="muted" style="font-size: 12px">launched by {{ detail.createdBy.name }}</span>
         <span class="chip" title="Total SDK cost for this run">{{ formatUsd(runCost) }}</span>
         <span class="chip" title="Total tokens (input + output + cache read + cache write)">{{ formatTokens(runTokens) }} tokens</span>
         <span v-if="detail.fixIterations" class="chip" title="Fix loops so far">fix loops: {{ detail.fixIterations }}</span>
@@ -288,7 +307,7 @@ async function removeWorktrees() {
         <div class="row" style="gap: 8px">
           <strong>Overlaps with other active runs</strong>
           <div class="spacer" />
-          <button @click="recheckOverlaps" :disabled="overlapBusy">{{ overlapBusy ? "Checking…" : "Re-check" }}</button>
+          <button @click="recheckOverlaps" :disabled="overlapBusy || !can('operator')" :title="needs('operator')">{{ overlapBusy ? "Checking…" : "Re-check" }}</button>
         </div>
         <div v-for="o in detail.overlaps" :key="o.otherRunId + o.repoPath" style="margin-top: 4px">
           <RouterLink :to="`/runs/${o.otherRunId}`">{{ o.otherLabel }}</RouterLink>
@@ -304,19 +323,19 @@ async function removeWorktrees() {
         Paused: {{ detail.pauseReason }}
       </div>
       <div class="row" style="margin-top: 12px; gap: 6px; flex-wrap: wrap">
-        <button v-for="r in ROLES" :key="r" @click="jump(r)">Jump → {{ ROLE_LABELS[r] }}</button>
+        <button v-for="r in ROLES" :key="r" @click="jump(r)" :disabled="!can('operator')" :title="needs('operator')">Jump → {{ ROLE_LABELS[r] }}</button>
         <div class="spacer" />
-        <button v-if="hasWorktrees" @click="removeWorktrees" :disabled="!canRemoveWorktrees" title="Available when the run is done, failed or paused. Branches are kept.">Remove worktrees</button>
-        <button class="warn" @click="skip" :disabled="!detail.pendingApproval">Skip gate</button>
-        <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused' || detail.state === 'failed'">Abort</button>
+        <button v-if="hasWorktrees" @click="removeWorktrees" :disabled="!canRemoveWorktrees || !can('admin')" :title="needs('admin') ?? 'Available when the run is done, failed or paused. Branches are kept.'">Remove worktrees</button>
+        <button class="warn" @click="skip" :disabled="!detail.pendingApproval || !can('approver')" :title="needs('approver')">Skip gate</button>
+        <button class="danger" @click="abort" :disabled="detail.state === 'done' || detail.state === 'paused' || detail.state === 'failed' || !can('operator')" :title="needs('operator')">Abort</button>
       </div>
       <div class="row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap">
         <span class="muted" style="font-size: 12px">Usage export:</span>
         <a :href="api.exportUrl(detail.runId, 'csv')" download>CSV</a>
         <a :href="api.exportUrl(detail.runId, 'json')" download>JSON</a>
         <div class="spacer" />
-        <button @click="removeRun('archive')" :disabled="!canRemove" title="Done, failed, paused or unstarted runs only">Archive</button>
-        <button class="danger" @click="removeRun('delete')" :disabled="!canRemove" title="Done, failed, paused or unstarted runs only">Delete</button>
+        <button @click="removeRun('archive')" :disabled="!canRemove || !can('admin')" :title="needs('admin') ?? 'Done, failed, paused or unstarted runs only'">Archive</button>
+        <button class="danger" @click="removeRun('delete')" :disabled="!canRemove || !can('admin')" :title="needs('admin') ?? 'Done, failed, paused or unstarted runs only'">Delete</button>
       </div>
       <div v-if="removeErr" class="error" style="margin-top: 6px; white-space: pre-wrap">{{ removeErr }}</div>
 
@@ -387,6 +406,15 @@ async function removeWorktrees() {
     </div>
 
     <UsagePanel :detail="detail" :live="liveUsage" />
+
+    <section v-if="detail.activity?.length" class="panel">
+      <h3 style="margin: 0 0 8px">Activity</h3>
+      <div v-for="(a, i) in [...detail.activity].reverse()" :key="i" class="activity-row">
+        <span class="muted mono" style="font-size: 11px">{{ new Date(a.at).toLocaleString() }}</span>
+        <strong>{{ a.by.name }}</strong>
+        <span>{{ activityText(a) }}</span>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -402,6 +430,7 @@ async function removeWorktrees() {
 .error { color: var(--danger); }
 .manual-source { background: var(--panel2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
 .manual-source p { margin: 4px 0; }
+.activity-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 13px; }
 .overlap-note { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 4px; font-size: 13px; }
 .paused-note { margin-top: 8px; padding: 8px 12px; border: 1px dashed var(--warn); border-radius: 4px; color: var(--warn); }
 .manual-source ul { margin-top: 6px; }

@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useRunsStore } from "../stores/runs.js";
 import type { RunEvent } from "../types.js";
+import { redirectToLogin } from "../auth.js";
 
 /**
  * App-wide: listens to every run's events, keeps the run list fresh, shows the
@@ -84,8 +85,12 @@ export function useAttention() {
         /* ignore */
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (closed) return;
+      if (ev.code === 4401) {
+        redirectToLogin();
+        return;
+      }
       reconnect = window.setTimeout(connect, 2000);
       scheduleRefresh(); // catch up on anything missed while disconnected
     };

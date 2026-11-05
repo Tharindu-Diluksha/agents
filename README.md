@@ -99,7 +99,17 @@ TypeScript/Node, Node (JS), Vue, React, C#/.NET, Python and Go. The launch dialo
 
 Role prompts share their common rules with the Claude Code plugin through `prompts/shared/`. Run `npm run sync:prompts` after editing a fragment or a template.
 
-## Auth
+## Sign-in and permissions (optional)
+
+By default there is no login; it's meant for your own machine. For a team on a shared server, set `AUTH_MODE=keycloak`:
+- **Sign-in:** users log in through Keycloak.
+- **Permissions:** Keycloak realm roles decide what each user can do: `viewer`, `operator` (launch/jump/abort), `approver` (decide gates, including PRs and JIRA comments) and `admin` (archive/delete, audit).
+- **Attribution:** each run shows who launched it and who approved what.
+- **Audit log:** an admin-only log in Postgres records sign-ins, denied requests and every action.
+
+`deploy/docker-compose.yml` starts Keycloak 26 and Postgres 16 with a ready-made realm and development users. See [deploy/README.md](deploy/README.md) for setup and a production checklist.
+
+## Claude auth
 
 By default the Agent SDK reuses your local Claude CLI login — run `claude /login` once with your Max/Pro account and the orchestrator's sessions will bill against that subscription. Set `ANTHROPIC_API_KEY` in `.env` only if you want to pin billing to an API account or run headless.
 
