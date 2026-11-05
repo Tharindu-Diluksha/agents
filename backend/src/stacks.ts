@@ -42,6 +42,8 @@ export interface StackProfile {
   id: StackId;
   label: string;
   bash: Partial<Record<Capability, RegExp[]>>;
+  /** Typical commands per capability, shown to the roles (each matches `bash`). */
+  examples: Partial<Record<Exclude<Capability, "inspect">, string[]>>;
   guidance: StackGuidance;
 }
 
@@ -84,6 +86,15 @@ const NODE_BASH: Partial<Record<Capability, RegExp[]>> = {
   ],
 };
 
+const nodeExamples = (extraTest: string[] = []): StackProfile["examples"] => ({
+  test: ["npm test", "npx vitest run <file>", ...extraTest],
+  lint: ["npm run lint", "npm run typecheck"],
+  build: ["npm run build"],
+  audit: ["npm audit"],
+  e2e: ["npx playwright test"],
+  install: ["npm install -D @playwright/test", "npx playwright install"],
+});
+
 const NODE_E2E = "Playwright (`@playwright/test`): tests under the existing e2e folder, one flow per user-facing AC, stable `data-testid`/role selectors, `webServer` in `playwright.config.*` to start the app.";
 const NODE_E2E_SUITE = "a `playwright.config.ts|js|mjs` file (or a `test:e2e`/`e2e` script)";
 const NODE_PORTS = "Most Node dev servers read `PORT`; Vite needs `--port $PORT` (or `server.port` from env). Point Playwright's `webServer.port`/`use.baseURL` at `E2E_PORT`/`E2E_BASE_URL`.";
@@ -100,6 +111,7 @@ export const STACKS: Record<StackId, StackProfile> = {
     id: "typescript",
     label: "TypeScript (Node)",
     bash: NODE_BASH,
+    examples: nodeExamples(["npx tsc --noEmit"]),
     guidance: {
       summary: "Vitest or Jest (whichever the repo uses) for unit tests, `tsc --noEmit`/`npm run typecheck` for types, Playwright for E2E.",
       unit: "Use the repo's runner (Vitest or Jest), co-located `*.test.ts`/`*.spec.ts` or the existing `test/` layout. Type the test code too; `tsc` must stay clean.",
@@ -114,6 +126,7 @@ export const STACKS: Record<StackId, StackProfile> = {
     id: "node",
     label: "Node.js (JavaScript)",
     bash: NODE_BASH,
+    examples: nodeExamples(["node --test"]),
     guidance: {
       summary: "The repo's runner (Vitest, Jest, Mocha or `node --test`) for unit tests, Playwright for E2E.",
       unit: "Use the existing runner and layout (`*.test.js`, `test/`). If there is none but Node ≥ 18, `node:test` with `node --test` needs no dependencies.",
@@ -128,6 +141,7 @@ export const STACKS: Record<StackId, StackProfile> = {
     id: "vue",
     label: "Vue",
     bash: NODE_BASH,
+    examples: nodeExamples(["npx vue-tsc --noEmit"]),
     guidance: {
       summary: "Vitest + `@vue/test-utils` for component/unit tests, `vue-tsc --noEmit` for types, Playwright for E2E.",
       unit: "Vitest + `@vue/test-utils`: `mount`/`shallowMount`, find by `data-testid` or role, assert rendered output and emitted events, not internals. For Pinia stores use `createTestingPinia` or a fresh `setActivePinia(createPinia())`.",
@@ -142,6 +156,7 @@ export const STACKS: Record<StackId, StackProfile> = {
     id: "react",
     label: "React",
     bash: NODE_BASH,
+    examples: nodeExamples(),
     guidance: {
       summary: "Vitest or Jest + React Testing Library for unit/component tests, Playwright for E2E.",
       unit: "React Testing Library: render, query by role/label/text (`getByRole`), drive with `userEvent`, assert what the user sees. Don't test hooks' internals or component state directly; test hooks with `renderHook` only when they are the unit.",
@@ -163,6 +178,14 @@ export const STACKS: Record<StackId, StackProfile> = {
       e2e: [/^dotnet\s+test(\s|$)/],
       install: [/^dotnet\s+add\s+(\S+\s+)?package(\s|$)/, /^dotnet\s+tool\s+restore(\s|$)/, /^pwsh\s+\S*playwright\.ps1\s+install(\s|$)/],
       inspect: [/^cat\s+[\w./\\-]+\.(csproj|fsproj|sln|props|targets)$/, /^cat\s+(global\.json|nuget\.config|NuGet\.Config|appsettings[\w.-]*\.json)$/],
+    },
+    examples: {
+      test: ["dotnet test", "dotnet test --filter \"FullyQualifiedName~Orders\""],
+      lint: ["dotnet build", "dotnet format --verify-no-changes"],
+      build: ["dotnet build"],
+      audit: ["dotnet list package --vulnerable"],
+      e2e: ["dotnet test <E2E test project>"],
+      install: ["dotnet add <project> package Microsoft.Playwright.NUnit", "pwsh bin/Debug/<tfm>/playwright.ps1 install"],
     },
     guidance: {
       summary: "xUnit, NUnit or MSTest (whichever test projects use) via `dotnet test`, `WebApplicationFactory` for integration, Microsoft.Playwright for E2E.",
@@ -197,6 +220,14 @@ export const STACKS: Record<StackId, StackProfile> = {
       ],
       inspect: [/^cat\s+(pyproject\.toml|requirements[\w.-]*\.txt|setup\.(cfg|py)|pytest\.ini|tox\.ini|Pipfile|conftest\.py|manage\.py)$/],
     },
+    examples: {
+      test: ["pytest -q", "python -m pytest tests/unit -k <name>"],
+      lint: ["ruff check .", "mypy <package>"],
+      build: ["python -m compileall -q <package>"],
+      audit: ["pip-audit"],
+      e2e: ["pytest tests/e2e"],
+      install: ["pip install pytest-playwright", "python -m playwright install"],
+    },
     guidance: {
       summary: "pytest (or the repo's `unittest` suite), run inside the run's virtualenv; pytest-playwright for E2E.",
       unit: "pytest: `tests/` (or the existing layout), `test_*.py`, plain `assert`, fixtures in `conftest.py`, `pytest.mark.parametrize` for cases. Keep the repo's style if it uses `unittest`. The run's `.venv` is on PATH, so `pytest` / `python -m pytest` use the project's dependencies.",
@@ -218,6 +249,14 @@ export const STACKS: Record<StackId, StackProfile> = {
       e2e: [/^go\s+test(\s|$)/],
       install: [/^go\s+(get|mod\s+(download|tidy))(\s|$)/],
       inspect: [/^cat\s+(go\.mod|go\.sum|Makefile|\.golangci\.ya?ml)$/],
+    },
+    examples: {
+      test: ["go test ./...", "go test ./<pkg> -run <TestName>"],
+      lint: ["go vet ./...", "gofmt -l .", "golangci-lint run"],
+      build: ["go build ./..."],
+      audit: ["govulncheck ./..."],
+      e2e: ["go test -tags e2e ./..."],
+      install: ["go get <module>"],
     },
     guidance: {
       summary: "`go test ./...` with table-driven tests, `httptest` for integration, `go vet`/golangci-lint for checks.",
@@ -309,3 +348,11 @@ export function stackBashPatterns(stacks: Iterable<StackId>, capabilities: Itera
   }
   return out;
 }
+
+/** Human-readable detection rules (mirrors detectStacks), for docs and the plugin's stack guide. */
+export const DETECTION_RULES: string[] = [
+  "`package.json` depending on `vue`/`nuxt` → **vue**; on `react`/`next` → **react**; on `typescript` or with a `tsconfig.json` → **typescript**; otherwise → **node**",
+  "a `.sln`/`.slnx`/`.csproj`/`.fsproj` at the root or one level under `src/`, `tests/` or `test/` → **dotnet**",
+  "`pyproject.toml`, `requirements*.txt`, `setup.py`/`setup.cfg` or `Pipfile` → **python**",
+  "`go.mod` → **go**",
+];

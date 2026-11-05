@@ -2,7 +2,7 @@
 
 - **Ticket**: {{PROJ-123}}
 - **Tester**: Unit Tester role
-- **Runner**: {{vitest / jest}} — `{{command used}}`
+- **Runner**: {{e.g. Vitest, Jest, xUnit, NUnit, pytest, go test}} — `{{command used}}`
 
 ## RED phase — failing tests written before implementation
 

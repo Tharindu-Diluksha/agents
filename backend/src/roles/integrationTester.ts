@@ -39,7 +39,7 @@ export const integrationTester: RoleSpec = {
       "",
       "Unit tests are already green. Your job is **integration tests**: exercise the new behaviour across real module boundaries — e.g. HTTP route → handler → service → repository, a job consuming a real message shape, or two packages working together — with as little mocking as the repo's conventions allow.",
       "",
-      "1. Discover how the repo does integration tests (an `integration/` folder, `*.int.test.ts`, a separate Vitest project/config, a `test:integration` script). Follow that. If there is no separate setup, add integration-style tests using the existing runner, in the location the repo's conventions suggest.",
+      "1. Discover how the repo does integration tests (a separate folder or test project, a naming pattern, a dedicated script or test category; see the Stack section). Follow that. If there is no separate setup, add integration-style tests using the existing runner, in the location the repo's conventions suggest.",
       "2. Write tests for the integration points listed in the plan's **Test plan** section, covering the happy path and the main failure paths for each relevant AC-id.",
       "3. Run them. For each failure classify:",
       "   - **test-bug** — fix the test, rerun.",

@@ -41,7 +41,7 @@ export type OrchestratorSignal =
   | "orchestrator_restart"
   /** The user (or review auto-routing) sent the review report back for fixes. */
   | "review_fixes_required"
-  /** The user approved creating a Playwright suite. */
+  /** The user approved creating an E2E suite. */
   | "create_suite_approved"
   /** Merging the latest base into the branch left conflicts for the Developer to resolve. */
   | "merge_conflicts";

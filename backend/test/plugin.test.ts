@@ -35,13 +35,12 @@ describe("jira-to-pr plugin", () => {
     expect(market.plugins).toContainEqual(expect.objectContaining({ name: "jira-to-pr", source: "./plugins/jira-to-pr" }));
   });
 
-  it("ships the same artifact templates as the orchestrator app (run `npm run sync:plugin-templates`)", () => {
+  it("ships the app's artifact templates and a generated stack guide (see promptSync.test.ts for drift)", () => {
     const appTemplates = readdirSync(join(root, "templates")).filter((f) => f.endsWith(".md")).sort();
-    const pluginTemplates = readdirSync(join(plugin, "skills", "run", "templates")).sort();
-    expect(pluginTemplates).toEqual(appTemplates);
-    for (const f of appTemplates) {
-      expect(read(join(plugin, "skills", "run", "templates", f)), f).toBe(read(join(root, "templates", f)));
-    }
+    expect(readdirSync(join(plugin, "skills", "run", "templates")).sort()).toEqual(appTemplates);
+    expect(existsSync(join(plugin, "skills", "run", "reference", "stacks.md"))).toBe(true);
+    expect(skill).toContain("${CLAUDE_SKILL_DIR}/reference/stacks.md");
+    expect(skill).toContain("Stack guide:");
   });
 
   it("defines each role agent with a name, description and tool list, and the skill calls every one", () => {

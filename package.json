@@ -10,8 +10,9 @@
     "start": "npm --prefix backend run start",
     "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
     "test": "npm --prefix backend run test",
-    "sync:plugin-templates": "node scripts/sync-plugin-templates.mjs",
-    "validate:plugin": "claude plugin validate ."
+    "validate:plugin": "claude plugin validate .",
+    "sync:prompts": "npm --prefix backend run sync:prompts --",
+    "check:prompts": "npm --prefix backend run sync:prompts -- --check"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

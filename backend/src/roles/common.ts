@@ -8,7 +8,7 @@ import {
 } from "../orchestrator/artifacts.js";
 import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
 import type { RoleInputCtx, RoleSpec } from "./types.js";
-import { STACKS, stackBashPatterns, stacksOf, type Capability } from "../stacks.js";
+import { STACKS, stackBashPatterns, stacksOf, type Capability, type StackId } from "../stacks.js";
 import { workDir } from "../orchestrator/workspaces.js";
 import { portsPromptLines } from "../orchestrator/ports.js";
 
@@ -201,6 +201,21 @@ export function bashBoundaryLine(record: RunRecord, gitPart: string, spec: RoleS
   return `- One Bash command at a time (no \`;\`, \`&&\`, pipes or redirects, except a leading \`cd <repo> && \`): ${gitPart}, plus the stack's own commands to ${caps.join(", ")} — see the Stack section. Anything else is blocked.`;
 }
 
+const ROLE_EXAMPLE_CAPS: Partial<Record<RoleId, Array<Exclude<Capability, "inspect">>>> = {
+  developer: ["test", "lint", "build"],
+  unitTester: ["test", "lint"],
+  integrationTester: ["test"],
+  reviewer: ["lint", "audit"],
+  e2eTester: ["e2e", "install"],
+};
+
+/** Example commands for the role's capabilities in one stack, e.g. "`pytest -q`, `ruff check .`". */
+function capabilityExamples(id: StackId, role: RoleId): string {
+  const caps = ROLE_EXAMPLE_CAPS[role] ?? [];
+  const cmds = caps.flatMap((c) => STACKS[id].examples[c] ?? []);
+  return [...new Set(cmds)].map((c) => `\`${c}\``).join(", ");
+}
+
 type GuidanceKey = "unit" | "integration" | "e2e" | "review";
 const ROLE_GUIDANCE: Partial<Record<RoleId, GuidanceKey[]>> = {
   developer: ["unit", "integration"],
@@ -226,6 +241,8 @@ export function stackSection(record: RunRecord, role: RoleId): string {
       const g = STACKS[id].guidance;
       if (stacks.length > 1) lines.push(`- _${STACKS[id].label}:_ ${g.summary}`);
       else lines.push(`- ${g.summary}`);
+      const examples = capabilityExamples(id, role);
+      if (examples) lines.push(`  - Commands: ${examples}`);
       for (const k of keys) {
         const label = k === "unit" ? "Unit tests" : k === "integration" ? "Integration tests" : k === "e2e" ? "E2E" : "Review checks";
         lines.push(`  - ${label}: ${g[k]}`);

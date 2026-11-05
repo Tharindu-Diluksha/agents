@@ -2,13 +2,13 @@
 
 - **Ticket**: {{PROJ-123}}
 - **Tester**: E2E Tester role
-- **Suite**: Playwright
-- **Config**: `{{playwright.config.ts}}`
+- **Framework**: {{Playwright (TS / .NET / Python) or the repo's E2E setup}}
+- **Config / project**: `{{playwright.config.ts, the E2E test project, or tests/e2e}}`
 - **Run at**: {{timestamp}}
 
 ## Setup
 
-- Playwright version: {{...}}
+- Framework version: {{...}}
 - Browsers run: {{chromium, firefox, webkit}}
 - Setup commands run: {{...}}
 

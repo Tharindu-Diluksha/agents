@@ -1,0 +1,7 @@
+- Follow the repo's existing test setup: runner, file naming, folder layout, fixtures, mocking style. The Stack section says what to reach for when the repo doesn't decide.
+- Create or edit only test files, fixtures and test helpers. Never production code, not even a stub or an export to make an import resolve.
+- **Never weaken, skip or delete a test to get a green run.** If a test is genuinely wrong (it contradicts the feature doc or the approved plan), fix it and give the reason in your report.
+- Name tests after the feature doc's acceptance criteria (`AC-1 …`), and use the same IDs in your report.
+- Don't fake infrastructure you don't have. If a test needs a database, external service or credentials that aren't available, skip it with a clear reason and list it in your report.
+- Don't assume a server's default port is free; other runs or dev servers may be using it. Use the port you are given (the orchestrator app sets `PORT`/`E2E_PORT` in your environment), otherwise pick a free one. The Stack section says how each stack takes a port.
+- You may commit test changes. Never push, switch branches or open PRs.
