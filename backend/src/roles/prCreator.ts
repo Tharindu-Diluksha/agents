@@ -16,6 +16,7 @@ export const prCreator: RoleSpec = {
     /^cat\s+(package\.json|\.github\/pull_request_template\.md)$/,
     BASH.ls,
   ],
+  capabilities: ["inspect"],
   writeScope: "run",
   needsWorkspace: true,
   maxTurns: 40,

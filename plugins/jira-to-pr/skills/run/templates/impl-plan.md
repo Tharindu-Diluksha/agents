@@ -5,7 +5,7 @@
 
 ## Pre-flight
 
-- [ ] `npm test` is green on the base branch (verified by Developer role on run start).
+- [ ] The unit test suite (`{{command}}`) is green on the base branch (verified by the Developer before planning).
 - [ ] Target branch per repo: `{{feature/PROJ-123-...}}` (created off each repo's base branch).
 
 ## File plan

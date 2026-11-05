@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
 import { createServer } from "node:net";
+import { delimiter, dirname, join } from "node:path";
+import { stacksOf } from "../stacks.js";
 import { config } from "../config.js";
 import type { PortBlock, RunRecord } from "./types.js";
 
@@ -44,6 +47,22 @@ export async function allocatePortBlock(
 /** Environment for a run's role sessions (inherited by every Bash command they run). */
 export function runEnv(record: RunRecord): Record<string, string> {
   const env: Record<string, string> = { ORCH_RUN_ID: record.runId };
+
+  // Python: put each worktree's .venv first on PATH, so `pytest`/`python` use the project's dependencies.
+  const venvBins = record.repos
+    .filter((r) => r.workPath && stacksOf(r).includes("python"))
+    .map((r) => join(r.workPath!, ".venv", process.platform === "win32" ? "Scripts" : "bin"))
+    .filter((d) => existsSync(d));
+  if (venvBins.length > 0) {
+    env.PATH = [...venvBins, process.env.PATH ?? ""].join(delimiter);
+    env.VIRTUAL_ENV = dirname(venvBins[0]!);
+  }
+  const hasDotnet = record.repos.some((r) => stacksOf(r).includes("dotnet"));
+  if (hasDotnet) {
+    env.DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+    env.DOTNET_NOLOGO = "1";
+  }
+
   const ports = record.ports;
   if (ports) {
     env.ORCH_PORT_BASE = String(ports.base);
@@ -54,6 +73,7 @@ export function runEnv(record: RunRecord): Record<string, string> {
     env.E2E_PORT = String(ports.base);
     env.E2E_BASE_URL = `http://localhost:${ports.base}`;
     env.PLAYWRIGHT_BASE_URL = `http://localhost:${ports.base}`;
+    if (hasDotnet) env.ASPNETCORE_URLS = `http://localhost:${ports.base}`;
   }
   return env;
 }

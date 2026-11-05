@@ -1,5 +1,4 @@
-import {
-  aiGuidelineSection,
+import {  aiGuidelineSection,
   artifactRelative,
   BASH,
   endOfTurnExample,
@@ -8,6 +7,7 @@ import {
   orchestratorSection,
   primaryRepo,
   TRACEABILITY_NOTE,
+  bashBoundaryLine, stackSection
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -22,10 +22,9 @@ export const integrationTester: RoleSpec = {
     BASH.gitBranchRead,
     BASH.gitCommit,
     BASH.gitRestore,
-    ...BASH.testRunners,
-    BASH.catPackageJson,
     BASH.ls,
   ],
+  capabilities: ["test", "lint", "inspect"],
   writeScope: "repos-and-run",
   needsWorkspace: true,
   maxTurns: 80,
@@ -40,7 +39,7 @@ export const integrationTester: RoleSpec = {
       "",
       "Unit tests are already green. Your job is **integration tests**: exercise the new behaviour across real module boundaries — e.g. HTTP route → handler → service → repository, a job consuming a real message shape, or two packages working together — with as little mocking as the repo's conventions allow.",
       "",
-      "1. Discover how the repo does integration tests (an `integration/` folder, `*.int.test.ts`, a separate Vitest project/config, a `test:integration` script). Follow that. If there is no separate setup, add integration-style tests using the existing runner, in the location the repo's conventions suggest.",
+      "1. Discover how the repo does integration tests (a separate folder or test project, a naming pattern, a dedicated script or test category; see the Stack section). Follow that. If there is no separate setup, add integration-style tests using the existing runner, in the location the repo's conventions suggest.",
       "2. Write tests for the integration points listed in the plan's **Test plan** section, covering the happy path and the main failure paths for each relevant AC-id.",
       "3. Run them. For each failure classify:",
       "   - **test-bug** — fix the test, rerun.",
@@ -59,8 +58,9 @@ export const integrationTester: RoleSpec = {
       "",
       "## Boundaries",
       "- Only test files, fixtures and test helpers. Never production code.",
-      "- One Bash command at a time: git status/diff/log/show/add/commit/restore, npm/pnpm test*/typecheck*/lint*, npx vitest/jest/tsc, cat package.json, ls/dir.",
+      bashBoundaryLine(record, "git status/diff/log/show/add/commit/restore, ls/dir", integrationTester),
       "- You MUST NOT push.",
+      stackSection(record, "integrationTester"),
       aiGuidelineSection(record, "integrationTester"),
       orchestratorSection(ctx),
       endOfTurnExample("all integration tests pass", {

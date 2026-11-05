@@ -1,4 +1,4 @@
-import type { JiraMcpTestResult, Overlap, RoleId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
+import type { Analytics, JiraMcpTestResult, Overlap, RoleId, StackId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -24,6 +24,30 @@ export const api = {
   async refreshOverlaps(id: string): Promise<{ overlaps: Overlap[] }> {
     return json(await fetch(`/api/runs/${id}/overlaps/refresh`, { method: "POST" }));
   },
+  async detectStacks(path: string): Promise<{ stacks: StackId[] }> {
+    return json(await fetch(`/api/stacks/detect?path=${encodeURIComponent(path)}`));
+  },
+  async archiveRun(id: string, force = false): Promise<void> {
+    await json(
+      await fetch(`/api/runs/${id}/archive`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force }),
+      }),
+    );
+  },
+  async deleteRun(id: string, force = false): Promise<void> {
+    await json(await fetch(`/api/runs/${id}${force ? "?force=true" : ""}`, { method: "DELETE" }));
+  },
+  async getAnalytics(includeArchived: boolean): Promise<Analytics> {
+    return json(await fetch(`/api/analytics?archived=${includeArchived}`));
+  },
+  exportUrl(id: string, format: "json" | "csv"): string {
+    return `/api/runs/${id}/export?format=${format}`;
+  },
+  analyticsCsvUrl(includeArchived: boolean): string {
+    return `/api/analytics/export.csv?archived=${includeArchived}`;
+  },
   async getSlots(): Promise<Slots> {
     return json(await fetch("/api/slots"));
   },
@@ -41,7 +65,7 @@ export const api = {
   },
   async launchRun(input: {
     source: RunSource;
-    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string }>;
+    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string; stacks?: StackId[] }>;
     models?: Partial<Record<RoleId, string>>;
   }): Promise<{ runId: string }> {
     return json(

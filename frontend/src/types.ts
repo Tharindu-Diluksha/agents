@@ -61,8 +61,13 @@ export interface ProposedBranches {
   perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string; note?: string }>;
 }
 
+export const STACK_IDS = ["typescript", "node", "vue", "react", "dotnet", "python", "go"] as const;
+export type StackId = (typeof STACK_IDS)[number];
+
 export interface RepoTarget {
   path: string;
+  /** Tech stacks, primary first. Absent on runs created before stack profiles (treated as TypeScript). */
+  stacks?: StackId[];
   baseBranch: string;
   aiGuidelinePath: string | null;
   /** This run's git worktree for the repo, once created. */
@@ -153,6 +158,7 @@ export interface Overlap {
 type RawRunEvent =
   | { type: "ws.hello"; runId?: string; scope?: string }
   | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
+  | { type: "run.removed"; runId: string; archived: boolean }
   | { type: "run.created"; runId: string; label: string; repoPaths: string[] }
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }
@@ -193,6 +199,7 @@ export interface ServerConfig {
   maxRunCostUsd: number;
   reviewAutoRoute: boolean;
   jira: JiraMcpSummary;
+  stacks: Array<{ id: StackId; label: string; summary: string }>;
   maxConcurrentRoles: number;
   worktreesDir: string;
   ports: { rangeStart: number; rangeEnd: number; blockSize: number };
@@ -243,4 +250,48 @@ export function formatTokens(n: number | undefined): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1)}k`;
   return String(v);
+}
+
+export interface RoleStats {
+  role: RoleId;
+  attempts: number;
+  costUsd: number;
+  tokens: number;
+  avgCostPerAttempt: number;
+  avgDurationSec: number | null;
+  byStatus: Partial<Record<AttemptStatus, number>>;
+}
+
+export interface ReasonCount {
+  reason: string;
+  count: number;
+  lastRunId: string;
+}
+
+export interface AnalyticsRunRow {
+  runId: string;
+  label: string;
+  archived: boolean;
+  state: RunState;
+  stacks: string;
+  createdAt: string;
+  durationMin: number | null;
+  costUsd: number;
+  tokens: number;
+  fixIterations: number;
+  attempts: number;
+}
+
+export interface Analytics {
+  runs: number;
+  byState: Partial<Record<RunState, number>>;
+  costUsd: number;
+  tokens: number;
+  avgCostPerDoneRun: number | null;
+  medianDoneDurationMin: number | null;
+  avgFixIterations: number | null;
+  roles: RoleStats[];
+  pauseReasons: ReasonCount[];
+  failureReasons: ReasonCount[];
+  runRows: AnalyticsRunRow[];
 }

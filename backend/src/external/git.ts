@@ -144,6 +144,16 @@ export async function switchWorktreeBranch(worktreePath: string, branch: string)
   return exists ? "switched" : "created";
 }
 
+/** Paths with uncommitted changes (tracked or untracked) in a worktree, from `git status --porcelain`. */
+export async function uncommittedPaths(worktreePath: string): Promise<string[]> {
+  const r = await runCmd("git", ["status", "--porcelain"], worktreePath);
+  if (r.code !== 0) throw new Error(`git status failed: ${r.stderr.trim()}`);
+  return r.stdout
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop()!.trim());
+}
+
 /** `git worktree remove` (with `--force` to discard uncommitted changes), then prune. */
 export async function removeWorktree(repoPath: string, worktreePath: string, force: boolean): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath];
@@ -170,10 +180,21 @@ export async function changedFiles(worktreePath: string, baseRef: string): Promi
   const diff = await runCmd("git", ["diff", "--name-only", mb.stdout.trim()], worktreePath);
   if (diff.code !== 0) throw new Error(`git diff failed: ${diff.stderr.trim()}`);
   const untracked = await runCmd("git", ["ls-files", "--others", "--exclude-standard"], worktreePath);
-  const files = [...diff.stdout.split("\n"), ...(untracked.code === 0 ? untracked.stdout.split("\n") : [])]
-    .map((f) => f.trim())
-    .filter(Boolean);
+  const tracked = diff.stdout.split("\n").map((f) => f.trim()).filter(Boolean);
+  // Untracked dependency/build output (an un-ignored .venv, bin/obj…) isn't the run's work.
+  const added = (untracked.code === 0 ? untracked.stdout.split("\n") : []).map((f) => f.trim()).filter((f) => f && !isToolchainOutput(f));
+  const files = [...tracked, ...added];
   return [...new Set(files)].sort();
+}
+
+/**
+ * Dependency/build output directories (a venv, node_modules, .NET bin/obj…).
+ * Untracked files under them aren't a run's changes even when a repo forgot
+ * to .gitignore them.
+ */
+const TOOLCHAIN_DIRS = new Set(["node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "bin", "obj", ".gradle", "dist", "coverage", "playwright-report", "test-results"]);
+export function isToolchainOutput(path: string): boolean {
+  return path.split(/[\\/]/).slice(0, -1).some((seg) => TOOLCHAIN_DIRS.has(seg));
 }
 
 export type SyncResult =

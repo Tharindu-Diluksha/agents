@@ -32,7 +32,8 @@ This session's context is shared by every step, so it gets more expensive as it 
 4. **Source.** If `$ARGUMENTS` contains a JIRA key (`[A-Z][A-Z0-9]+-[0-9]+`, possibly inside an Atlassian URL) the source is **jira**; otherwise **manual**. If `$ARGUMENTS` is empty, ask the user for a ticket key or a description.
 5. **Run folder.** `RUN_ID` = lower-case ticket key, or a short slug of the description, plus `-YYYYMMDD-HHMM`. `RUN` = `REPO/.jira-to-pr/RUN_ID`. Create it. Make sure `.jira-to-pr/` is listed in `REPO/.git/info/exclude` (append it if missing) so run files are never committed.
 6. **Templates** are in `${CLAUDE_SKILL_DIR}/templates/` → `TEMPLATES`. Pass this absolute path to every subagent.
-7. Create `RUN/state.md` (see *State and resuming*) and `RUN/ledger.md` (see `${CLAUDE_SKILL_DIR}/reference/ledger.md`).
+7. **Stack.** Read only the *Detecting the stack* section of `${CLAUDE_SKILL_DIR}/reference/stacks.md` and apply it to `REPO` (look at `package.json` dependencies, `*.sln`/`*.csproj`, `pyproject.toml`/`requirements*.txt`, `go.mod`) → `STACK` (one or more of `typescript`, `node`, `vue`, `react`, `dotnet`, `python`, `go`). If nothing matches, ask the user which stack it is. `STACK_GUIDE` = the absolute path of that `stacks.md`. Confirm the stack at the plan gate.
+8. Create `RUN/state.md` (see *State and resuming*) and `RUN/ledger.md` (see `${CLAUDE_SKILL_DIR}/reference/ledger.md`).
 
 ## 2. Load the source → `RUN/ticket.md`
 
@@ -51,6 +52,8 @@ Repo: <REPO>
 Base: <BASE or base ref to diff against>
 Run folder: <RUN>
 Templates: <TEMPLATES>
+Stack: <STACK, e.g. "python" or "react + go">
+Stack guide: <STACK_GUIDE>
 Source: <jira KEY URL | manual>
 Read: <paths of the artifacts/reports this step needs>
 Notes / feedback: <user feedback from the last gate, hand-back notes, orchestrator notes — or "none">
@@ -88,7 +91,7 @@ Use the **AskUserQuestion** tool when it is available (it offers an "Other" free
 Each gate shows: the step, artifact paths, a 3–6 line summary, open questions. Options:
 
 - **Gate A — feature doc:** Approve · Request changes (re-run analyst with the feedback) · Stop. If the analyst wrote `proposed-jira-comment.md` (jira source only): ask separately — Post comment · Edit then post · Don't post. To post, use the JIRA MCP add-comment tool with the file's text (or the user's edit). If posting fails, show the error and ask again.
-- **Gate B — plan:** show the plan's file list and test plan in brief, and the base branch. Approve · Request changes (re-run developer PLAN with feedback) · Change base · Stop.
+- **Gate B — plan:** show the plan's file list and test plan in brief, the base branch and the detected stack. Approve · Request changes (re-run developer PLAN with feedback) · Change base or stack · Stop.
 - **Gate C — branch:** propose `feature/<ticket-key-or-slug>-<short-slug>` (lower-case, `[a-z0-9/-]`). If `git branch --list <name>` or `git worktree list` shows it in use, add a suffix. Approve · Use another name (Other) · Stop. Then: `git fetch origin <BASE>` (if there is an `origin`), and `git switch -c <name> origin/<BASE>` (or `<BASE>` when there is no remote).
 - **Gate D — review:** show `review-findings.json` counts and the top findings. Send back for fixes (→ developer FIX with `review-report.md`) · Continue to E2E · Stop. Recommend "send back" when blocker + high > 0.
 - **Gate E — E2E suite (only when the e2e-tester returns `needs-approval`):** show what it proposes to scaffold. Approve (re-run e2e-tester with "suite creation approved") · Skip E2E (go to J) · Stop.
@@ -126,7 +129,7 @@ Count fix loops in `state.md`. After **3**, stop and ask the user: Continue (res
 Keep `RUN/state.md` current after every step:
 
 ```
-run: <RUN_ID>   source: <jira KEY | manual>   repo: <REPO>   base: <BASE>
+run: <RUN_ID>   source: <jira KEY | manual>   repo: <REPO>   base: <BASE>   stack: <STACK>
 branch: <name or —>   step: <A..L>   status: <running | waiting-gate X | blocked | done>
 fix_loops: <n>
 agents: analyst=<agent id>, developer=<agent id>, unit-tester=<agent id>, …

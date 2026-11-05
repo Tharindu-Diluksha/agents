@@ -2,7 +2,7 @@
 
 - **Ticket**: {{PROJ-123}}
 - **Tester**: Integration Tester role
-- **Runner / setup**: {{e.g. vitest project "integration", `npm run test:integration`}}
+- **Runner / setup**: {{e.g. a separate test project/folder, `npm run test:integration`, `dotnet test --filter Category=Integration`, `pytest tests/integration`, `go test -tags integration ./...`}}
 
 ## Test cases
 

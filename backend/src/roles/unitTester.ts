@@ -1,5 +1,4 @@
-import {
-  aiGuidelineSection,
+import {  aiGuidelineSection,
   artifactRelative,
   BASH,
   endOfTurnExample,
@@ -8,6 +7,7 @@ import {
   orchestratorSection,
   primaryRepo,
   TRACEABILITY_NOTE,
+  bashBoundaryLine, stackSection
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -30,10 +30,9 @@ export const unitTester: RoleSpec = {
     BASH.gitBranchRead,
     BASH.gitCommit,
     BASH.gitRestore,
-    ...BASH.testRunners,
-    BASH.catPackageJson,
     BASH.ls,
   ],
+  capabilities: ["test", "lint", "inspect"],
   writeScope: "repos-and-run",
   needsWorkspace: true,
   maxTurns: 80,
@@ -83,8 +82,9 @@ export const unitTester: RoleSpec = {
       "",
       "## Boundaries",
       "- Only test files, fixtures and test helpers. Never production code.",
-      "- One Bash command at a time: git status/diff/log/show/add/commit/restore, npm/pnpm test*/typecheck*/lint*, npx vitest/jest/tsc, cat package.json, ls/dir.",
+      bashBoundaryLine(record, "git status/diff/log/show/add/commit/restore, ls/dir", unitTester),
       "- You MUST NOT push.",
+      stackSection(record, "unitTester"),
       aiGuidelineSection(record, "unitTester"),
       orchestratorSection(ctx),
       red

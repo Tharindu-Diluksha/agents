@@ -65,6 +65,7 @@ export function useAttention() {
       ev.type === "approval.requested" ||
       ev.type === "approval.resolved" ||
       ev.type === "run.overlaps" ||
+      ev.type === "run.removed" ||
       ev.type === "role.ended"
     ) {
       scheduleRefresh();

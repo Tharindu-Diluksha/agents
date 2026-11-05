@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { RunRecord } from "../orchestrator/types.js";
-import {
-  aiGuidelineSection,
+import {  aiGuidelineSection,
   artifactPath,
   artifactRelative,
   BASH,
@@ -10,6 +9,7 @@ import {
   maybeAttach,
   orchestratorSection,
   primaryRepo,
+  stackSection
 } from "./common.js";
 import { readArtifact } from "../orchestrator/artifacts.js";
 import type { RoleSpec } from "./types.js";
@@ -44,12 +44,9 @@ export const reviewer: RoleSpec = {
   bashAllowList: [
     BASH.gitRead,
     BASH.gitBranchRead,
-    /^npm\s+(audit|run\s+(lint|typecheck)(:\S+)?)(\s|$)/,
-    /^pnpm\s+(audit|run\s+(lint|typecheck)(:\S+)?)(\s|$)/,
-    /^npx\s+(eslint|tsc)(\s|$)/,
-    BASH.catPackageJson,
     BASH.ls,
   ],
+  capabilities: ["lint", "audit", "inspect"],
   // Read-only on source: the Reviewer can only write its own report files.
   writeScope: "run",
   needsWorkspace: true,
@@ -76,6 +73,7 @@ export const reviewer: RoleSpec = {
       "3. **AI guideline** (see the AI guideline section below, if present): any coding conventions, architecture rules, or review rubric the repo codifies for the AI to follow.",
       "4. **Tests**: does every AC-id have unit and/or integration coverage? Are any tests weakened, skipped, or asserting the wrong thing?",
       "5. **General code quality**: dead code, misleading names, unnecessary complexity.",
+      stackSection(record, "reviewer"),
       aiGuidelineSection(record, "reviewer"),
       "",
       "You have read-only access to source, plus git diff/log and lint/typecheck/audit. You MAY NOT modify source files; you can only write the two report files below.",

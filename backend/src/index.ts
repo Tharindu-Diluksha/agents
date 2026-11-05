@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { acquireInstanceLock, InstanceLockError } from "./orchestrator/instanceLock.js";
 import { recoverRuns } from "./orchestrator/recovery.js";
 import { registerRunsRoutes } from "./routes/runs.js";
+import { registerRequestGuard } from "./security.js";
 import { registerWsRoutes } from "./routes/ws.js";
 
 async function main() {
@@ -37,6 +38,8 @@ async function main() {
   const app = Fastify({ logger: false });
 
   await app.register(fastifyWebsocket);
+  // Host/Origin checks for every request, WebSocket upgrades included.
+  registerRequestGuard(app, config.allowedHosts);
 
   await registerRunsRoutes(app);
   await registerWsRoutes(app);

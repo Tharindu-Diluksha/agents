@@ -12,6 +12,7 @@ export const analyst: RoleSpec = {
   // for JIRA-sourced runs (see `jiraToolsForRun` in workflow.ts).
   jiraAccess: "read",
   bashAllowList: [],
+  capabilities: [],
   writeScope: "run",
   needsWorkspace: false,
   maxTurns: 30,

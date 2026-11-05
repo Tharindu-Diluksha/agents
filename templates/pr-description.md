@@ -17,9 +17,9 @@
 
 ## Test plan
 
-- [ ] Unit tests (`npm test`) — green.
+- [ ] Unit tests (`{{command}}`) — green.
 - [ ] Integration tests — green ({{note any tests skipped as env-missing}}).
-- [ ] E2E tests (`npx playwright test`) — green, or N/A.
+- [ ] E2E tests (`{{command}}`) — green, or N/A.
 - [ ] {{manual verification step}}.
 
 ## Related

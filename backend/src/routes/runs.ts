@@ -10,11 +10,14 @@ import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
-import { createRun, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
+import { detectStacks, STACK_IDS, STACKS } from "../stacks.js";
+import { createRun, listArchivedRuns, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
+import { ATTEMPT_COLUMNS, attemptRows, computeAnalytics, runRows, toCsv } from "../orchestrator/analytics.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
 import {
   abortRun,
   jumpToRole,
+  removeRun,
   removeRunWorkspaces,
   resumeAfterApproval,
   roleSlots,
@@ -26,6 +29,8 @@ const RepoBody = z.object({
   path: z.string().min(1),
   baseBranch: z.string().optional(),
   aiGuidelinePath: z.string().optional(),
+  /** Explicit stacks; omitted or empty = auto-detect from the repo's files. */
+  stacks: z.array(z.enum(STACK_IDS)).optional(),
 });
 
 const JiraSourceBody = z.object({
@@ -90,11 +95,22 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     maxRunCostUsd: config.maxRunCostUsd,
     reviewAutoRoute: config.reviewAutoRoute,
     jira: describeJiraMcp(),
+    stacks: STACK_IDS.map((id) => ({ id, label: STACKS[id].label, summary: STACKS[id].guidance.summary })),
     maxConcurrentRoles: config.maxConcurrentRoles,
     ports: config.ports,
     syncBaseBeforePr: config.syncBaseBeforePr,
     worktreesDir: paths.worktreesDir,
   }));
+
+  /** Detected stacks for a repo path (the launch dialog shows them before launching). */
+  app.get<{ Querystring: { path?: string } }>("/api/stacks/detect", async (req, reply) => {
+    const path = req.query.path ?? "";
+    if (!path || !existsSync(path)) {
+      reply.code(400).send({ error: "repo_not_found" });
+      return;
+    }
+    return { stacks: detectStacks(path) };
+  });
 
   /** Global role-session slots (shared by all runs). */
   app.get("/api/slots", async () => ({
@@ -151,7 +167,17 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       path: r.path,
       baseBranch: r.baseBranch ?? "master",
       aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
+      stacks: r.stacks && r.stacks.length > 0 ? r.stacks : detectStacks(r.path),
     }));
+    const unknown = repos.find((r) => r.stacks.length === 0);
+    if (unknown) {
+      reply.code(400).send({
+        error: "stack_not_detected",
+        repoPath: unknown.path,
+        detail: `Could not tell the tech stack of ${unknown.path}; choose one in the launch dialog (supported: ${STACK_IDS.join(", ")}).`,
+      });
+      return;
+    }
     const models = Object.fromEntries(
       Object.entries(parsed.data.models ?? {}).filter(([, v]) => typeof v === "string" && v.length > 0),
     ) as Partial<Record<RoleId, string>>;
@@ -300,10 +326,73 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  /** Moves a finished/failed/paused run to runs/.archive (artifacts and history kept, worktrees removed). */
+  app.post<{ Params: { id: string } }>("/api/runs/:id/archive", async (req, reply) => {
+    const parsed = RemoveWorkspacesBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
+      return;
+    }
+    try {
+      await removeRun(req.params.id, "archive", parsed.data.force);
+      reply.send({ ok: true });
+    } catch (err) {
+      reply.code(400).send({ error: "archive_failed", detail: errMsg(err) });
+    }
+  });
+
+  /** Deletes a finished/failed/paused run entirely (worktrees, artifacts, history, sessions). Branches stay. */
+  app.delete<{ Params: { id: string }; Querystring: { force?: string } }>("/api/runs/:id", async (req, reply) => {
+    try {
+      await removeRun(req.params.id, "delete", req.query.force === "true");
+      reply.send({ ok: true });
+    } catch (err) {
+      reply.code(400).send({ error: "delete_failed", detail: errMsg(err) });
+    }
+  });
+
+  /** One run's attempts with cost and usage, as JSON (with a run summary) or CSV. */
+  app.get<{ Params: { id: string }; Querystring: { format?: string } }>("/api/runs/:id/export", async (req, reply) => {
+    const record = loadRun(req.params.id) ?? listArchivedRuns().find((r) => r.runId === req.params.id);
+    if (!record) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    const attempts = attemptRows([record]);
+    if (req.query.format === "csv") {
+      reply
+        .header("content-type", "text/csv; charset=utf-8")
+        .header("content-disposition", `attachment; filename="${record.runId}-usage.csv"`)
+        .send(toCsv(attempts, ATTEMPT_COLUMNS));
+      return;
+    }
+    reply
+      .header("content-disposition", `attachment; filename="${record.runId}-usage.json"`)
+      .send({ run: runRows([record])[0], attempts });
+  });
+
+  /** Cross-run analytics (cost, tokens, fix loops, per-role stats, top pause/failure reasons). */
+  app.get<{ Querystring: { archived?: string } }>("/api/analytics", async (req) => {
+    return computeAnalytics(runsForAnalytics(req.query.archived !== "false"));
+  });
+
+  /** Every attempt of every run (archived included by default) as CSV. */
+  app.get<{ Querystring: { archived?: string } }>("/api/analytics/export.csv", async (req, reply) => {
+    const rows = attemptRows(runsForAnalytics(req.query.archived !== "false"));
+    reply
+      .header("content-type", "text/csv; charset=utf-8")
+      .header("content-disposition", `attachment; filename="orchestrator-usage.csv"`)
+      .send(toCsv(rows, ATTEMPT_COLUMNS));
+  });
+
   app.post<{ Params: { id: string } }>("/api/runs/:id/abort", async (req, reply) => {
     abortRun(req.params.id);
     reply.send({ ok: true });
   });
+}
+
+function runsForAnalytics(includeArchived: boolean) {
+  return [...listRuns(), ...(includeArchived ? listArchivedRuns() : [])];
 }
 
 function errMsg(err: unknown): string {

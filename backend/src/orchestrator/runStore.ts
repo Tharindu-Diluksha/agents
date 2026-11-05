@@ -72,11 +72,39 @@ function writeAtomic(file: string, body: string): void {
   renameSync(tmp, file);
 }
 
+/** Archived runs live in runs/.archive/<runId>/ (artifacts and event log kept, worktrees and sessions gone). */
+export function archiveDir(): string {
+  return join(paths.runsDir, ".archive");
+}
+
+/** Drops a run from the in-memory cache (after it was archived or deleted on disk). */
+export function forgetRun(runId: string): void {
+  cache.delete(runId);
+}
+
+/** Archived run records, read-only and uncached. */
+export function listArchivedRuns(): Array<RunRecord & { archived: true }> {
+  const dir = archiveDir();
+  if (!existsSync(dir)) return [];
+  const out: Array<RunRecord & { archived: true }> = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const file = join(dir, entry.name, "run.json");
+    if (!existsSync(file)) continue;
+    try {
+      out.push({ ...migrateLegacy(JSON.parse(readFileSync(file, "utf8")) as RunRecord), archived: true });
+    } catch {
+      // skip unreadable archives
+    }
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 export function listRuns(): RunRecord[] {
   if (!existsSync(paths.runsDir)) return [];
   const out: RunRecord[] = [];
   for (const entry of readdirSync(paths.runsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     try {
       const run = loadRun(entry.name);
       if (run) out.push(run);

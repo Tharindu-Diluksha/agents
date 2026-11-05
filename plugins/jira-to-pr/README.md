@@ -45,7 +45,7 @@ Then, inside the target repo: `/jira-to-pr:run <ticket or description>`.
 - Run Claude Code **in the target repo** with a clean working tree.
 - `git` and an authenticated `gh` CLI for the final push + PR.
 - For JIRA tickets: a JIRA/Atlassian MCP server connected to your Claude Code session. Only the main session uses it: the subagents read `ticket.md`, and a comment is posted only after you approve it. Without it, the skill asks you to paste the ticket.
-- Node/TypeScript repos work best (the roles expect `npm test`-style scripts and Vitest/Jest/Playwright), same as the orchestrator app.
+- Supported stacks, same as the app: TypeScript/Node, Node (JS), Vue, React, C#/.NET, Python and Go. The skill detects the stack and the subagents read their section of `skills/run/reference/stacks.md`, which lists frameworks, conventions and commands.
 
 ## Models per role
 
@@ -89,6 +89,6 @@ If you need the guarantees, use the app; if you want something light to try in a
 
 ## Maintaining
 
-- The templates in `skills/run/templates/` are copies of the repo's `templates/`. After editing those, run `npm run sync:plugin-templates`. A backend test fails if they drift.
+- The subagents' shared guidance comes from `prompts/shared/*.md`, the templates from `templates/`, and `skills/run/reference/stacks.md` from `backend/src/stacks.ts`. After editing any of those, run `npm run sync:prompts`. `npm run check:prompts` and a backend test fail if anything drifts.
 - `npm run validate:plugin` runs `claude plugin validate` on the marketplace and plugin.
 - Before publishing anywhere, add a LICENSE (the validator flags its absence).

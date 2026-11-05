@@ -7,7 +7,8 @@ import {
   type ArtifactOwner,
 } from "../orchestrator/artifacts.js";
 import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
-import type { RoleInputCtx } from "./types.js";
+import type { RoleInputCtx, RoleSpec } from "./types.js";
+import { STACKS, stackBashPatterns, stacksOf, type Capability, type StackId } from "../stacks.js";
 import { workDir } from "../orchestrator/workspaces.js";
 import { portsPromptLines } from "../orchestrator/ports.js";
 
@@ -125,7 +126,7 @@ export function orchestratorSection(ctx: RoleInputCtx): string {
       "",
       "## Orchestrator signal",
       "",
-      "The user APPROVED Playwright suite creation. Install Playwright, scaffold the config, add tests, and run them.",
+      "The user APPROVED E2E suite creation. Install the E2E framework (see the Stack section), scaffold its config, add tests, and run them.",
     );
   } else if (ctx.signal === "merge_conflicts") {
     lines.push(
@@ -174,12 +175,88 @@ export const BASH = {
   /** Discard local edits to files (never switches branches). */
   gitRestore: /^git\s+(restore\s|checkout\s+--\s)/,
   gitStash: /^git\s+stash(\s|$)/,
-  catPackageJson: /^cat\s+package\.json$/,
   ls: /^(ls|dir)(\s|$)/,
-  /** Unit test runners, typecheck and lint (npm/pnpm scripts named test*, typecheck*, lint*). */
-  testRunners: [
-    /^npm\s+(test|run\s+(test|typecheck|lint)(:\S+)?)(\s|$)/,
-    /^pnpm\s+(test|run\s+(test|typecheck|lint)(:\S+)?)(\s|$)/,
-    /^npx\s+(vitest|jest|tsc)(\s|$)/,
-  ],
 } as const;
+
+/** The role's effective Bash allowlist for this run: its own patterns plus its capabilities in every repo's stacks. */
+export function bashAllowListFor(spec: RoleSpec, record: RunRecord): RegExp[] {
+  const capabilities = [...spec.capabilities, ...(spec.extraCapabilities?.(record) ?? [])];
+  const stacks = record.repos.flatMap((r) => stacksOf(r));
+  return [...spec.bashAllowList, ...stackBashPatterns(stacks, capabilities)];
+}
+
+const CAPABILITY_WORDS: Record<Capability, string> = {
+  test: "run tests and typecheck",
+  lint: "lint/format checks",
+  build: "build",
+  audit: "dependency audit",
+  e2e: "run E2E tests",
+  install: "install packages",
+  inspect: "cat build/manifest files",
+};
+
+/** The "Bash boundaries" prompt line for a role, naming its toolchain capabilities. */
+export function bashBoundaryLine(record: RunRecord, gitPart: string, spec: RoleSpec): string {
+  const caps = [...spec.capabilities, ...(spec.extraCapabilities?.(record) ?? [])].map((c) => CAPABILITY_WORDS[c]);
+  return `- One Bash command at a time (no \`;\`, \`&&\`, pipes or redirects, except a leading \`cd <repo> && \`): ${gitPart}, plus the stack's own commands to ${caps.join(", ")} — see the Stack section. Anything else is blocked.`;
+}
+
+const ROLE_EXAMPLE_CAPS: Partial<Record<RoleId, Array<Exclude<Capability, "inspect">>>> = {
+  developer: ["test", "lint", "build"],
+  unitTester: ["test", "lint"],
+  integrationTester: ["test"],
+  reviewer: ["lint", "audit"],
+  e2eTester: ["e2e", "install"],
+};
+
+/** Example commands for the role's capabilities in one stack, e.g. "`pytest -q`, `ruff check .`". */
+function capabilityExamples(id: StackId, role: RoleId): string {
+  const caps = ROLE_EXAMPLE_CAPS[role] ?? [];
+  const cmds = caps.flatMap((c) => STACKS[id].examples[c] ?? []);
+  return [...new Set(cmds)].map((c) => `\`${c}\``).join(", ");
+}
+
+type GuidanceKey = "unit" | "integration" | "e2e" | "review";
+const ROLE_GUIDANCE: Partial<Record<RoleId, GuidanceKey[]>> = {
+  developer: ["unit", "integration"],
+  unitTester: ["unit"],
+  integrationTester: ["integration"],
+  reviewer: ["review"],
+  e2eTester: ["e2e"],
+};
+
+/**
+ * "Stack" section for a role prompt: each repo's stacks with the guidance
+ * relevant to the role (test frameworks and conventions, E2E suite, review
+ * checks, ports).
+ */
+export function stackSection(record: RunRecord, role: RoleId): string {
+  const keys = ROLE_GUIDANCE[role];
+  if (!keys) return "";
+  const lines = ["", "## Stack", ""];
+  for (const repo of record.repos) {
+    const stacks = stacksOf(repo);
+    lines.push(`**\`${workDir(repo)}\`** — ${stacks.map((s) => STACKS[s].label).join(" + ")}`);
+    for (const id of stacks) {
+      const g = STACKS[id].guidance;
+      if (stacks.length > 1) lines.push(`- _${STACKS[id].label}:_ ${g.summary}`);
+      else lines.push(`- ${g.summary}`);
+      const examples = capabilityExamples(id, role);
+      if (examples) lines.push(`  - Commands: ${examples}`);
+      for (const k of keys) {
+        const label = k === "unit" ? "Unit tests" : k === "integration" ? "Integration tests" : k === "e2e" ? "E2E" : "Review checks";
+        lines.push(`  - ${label}: ${g[k]}`);
+      }
+      if (role === "e2eTester") {
+        lines.push(`  - An existing E2E suite looks like: ${g.e2eSuite}.`);
+        lines.push(`  - Ports: ${g.ports}`);
+      }
+      if (role === "integrationTester" && record.ports) lines.push(`  - Ports: ${g.ports}`);
+    }
+  }
+  lines.push(
+    "",
+    "Use the repo's own scripts and conventions when they exist; the frameworks above are what to reach for when the repo doesn't decide for you.",
+  );
+  return lines.join("\n");
+}

@@ -39,7 +39,7 @@ describe("isPortFree", () => {
 
 describe("runEnv", () => {
   it("exposes the block under conventional names", () => {
-    const env = runEnv({ runId: "R1", ports: { base: 41010, count: 10 } } as unknown as RunRecord);
+    const env = runEnv({ runId: "R1", repos: [], ports: { base: 41010, count: 10 } } as unknown as RunRecord);
     expect(env).toEqual({
       ORCH_RUN_ID: "R1",
       ORCH_PORT_BASE: "41010",
@@ -50,6 +50,6 @@ describe("runEnv", () => {
       E2E_BASE_URL: "http://localhost:41010",
       PLAYWRIGHT_BASE_URL: "http://localhost:41010",
     });
-    expect(runEnv({ runId: "R2" } as unknown as RunRecord)).toEqual({ ORCH_RUN_ID: "R2" });
+    expect(runEnv({ runId: "R2", repos: [] } as unknown as RunRecord)).toEqual({ ORCH_RUN_ID: "R2" });
   });
 });

@@ -1,6 +1,5 @@
 import type { RunRecord } from "../orchestrator/types.js";
-import {
-  aiGuidelineSection,
+import {  aiGuidelineSection,
   artifactRelative,
   BASH,
   endOfTurnExample,
@@ -9,11 +8,12 @@ import {
   orchestratorSection,
   primaryRepo,
   TRACEABILITY_NOTE,
+  stackSection
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
 
-/** True once the user approved scaffolding a Playwright suite for this run. */
+/** True once the user approved scaffolding an E2E suite for this run. */
 export function suiteCreationApproved(record: RunRecord): boolean {
   return record.stateHistory.some((h) => h.from === "awaiting_test_suite_approval" && h.to === "e2e_tester_running");
 }
@@ -29,17 +29,12 @@ export const e2eTester: RoleSpec = {
     BASH.gitCommit,
     BASH.gitRestore,
     BASH.gitStash,
-    ...BASH.testRunners,
-    /^(npm|pnpm)\s+run\s+(e2e|playwright)(:\S+)?(\s|$)/,
-    /^npm\s+exec\s+playwright\s+/,
-    /^npx\s+playwright\s+/,
-    /^pnpm\s+exec\s+playwright\s+/,
-    /^cat\s+(package\.json|playwright\.config\.(ts|js|mjs))$/,
     BASH.ls,
   ],
-  extraBashAllowList(record) {
+  capabilities: ["test", "e2e", "inspect"],
+  extraCapabilities(record) {
     // Installing packages is only permitted after the user approved suite creation.
-    return suiteCreationApproved(record) ? [/^(npm|pnpm)\s+(install|i|add)(\s|$)/] : [];
+    return suiteCreationApproved(record) ? ["install"] : [];
   },
   writeScope: "repos-and-run",
   needsWorkspace: true,
@@ -53,9 +48,9 @@ export const e2eTester: RoleSpec = {
       headerFor(record, "E2E Tester"),
       "## Scope",
       "",
-      "Unit and integration tests are already green and the code has passed review. Your job is **end-to-end Playwright tests** that drive the real application the way a user would, one flow per acceptance criterion.",
+      "Unit and integration tests are already green and the code has passed review. Your job is **end-to-end tests** that drive the real application the way a user would, one flow per acceptance criterion (the Stack section says which framework fits each repo).",
       "",
-      "**Step 1.** Check for an existing suite — look for `playwright.config.ts|js|mjs` in each repo listed above. If the run spans multiple repos, Playwright usually lives in the UI repo; run tests there only.",
+      "**Step 1.** Check each repo for an existing E2E suite (the Stack section says what one looks like for that stack). If the run spans multiple repos, the E2E suite usually lives in the UI repo; run tests there only.",
       "- If missing from the repo(s) that should have one: emit `status: \"awaiting_approval\"` with `approvalRequest.action: \"create_test_suite\"`. Describe exactly what you would scaffold (which repo, install step, directory layout, config). WAIT. Do not install anything yet. If the feature has no user-facing surface at all, say so in the summary — the user can skip E2E.",
       "- If present: proceed to step 2.",
       "",
@@ -63,7 +58,7 @@ export const e2eTester: RoleSpec = {
       ...(record.ports
         ? [
             "",
-            `**Ports.** Run the app under test on this run's ports (see the header). If \`playwright.config.*\` hard-codes a port or base URL (\`webServer.port\`/\`url\`, \`use.baseURL\`), change it to read \`process.env.E2E_PORT\` / \`process.env.E2E_BASE_URL\` with the old value as the fallback, and make sure the \`webServer.command\` starts the app on that port (most dev servers honour \`PORT\`; otherwise pass the port flag). This is a test-infrastructure change you may make; mention it in the report.`,
+            `**Ports.** Run the app under test on this run's ports (see the header and the Stack section). If the E2E config hard-codes a port or base URL, change it to read \`E2E_PORT\` / \`E2E_BASE_URL\` from the environment with the old value as the fallback, and make sure whatever starts the app uses that port. This is a test-infrastructure change you may make; mention it in the report.`,
           ]
         : []),
       "",
@@ -76,12 +71,13 @@ export const e2eTester: RoleSpec = {
       "",
       TRACEABILITY_NOTE,
       "",
-      "You MUST NOT push. Package installation (`npm install …`) is only allowed after the orchestrator passes `create_suite_approved`.",
+      "You MUST NOT push. Installing packages or browsers is only allowed after the orchestrator passes `create_suite_approved`.",
       "",
       "## Required reading",
       maybeAttach(record, "analyst", "feature-doc.md", "Feature doc"),
       maybeAttach(record, "developer", "impl-plan.md", "Implementation plan"),
       maybeAttach(record, "integrationTester", "integration-test-report.md", "Integration test report"),
+      stackSection(record, "e2eTester"),
       aiGuidelineSection(record, "e2eTester"),
       orchestratorSection(ctx),
       endOfTurnExample("example: no suite present", {
@@ -89,7 +85,7 @@ export const e2eTester: RoleSpec = {
         artifacts: [],
         approvalRequest: {
           action: "create_test_suite",
-          summary: "No Playwright suite found. Propose creating one.",
+          summary: "No E2E suite found. Propose creating one.",
           payloadPaths: [],
         },
         handoff: null,

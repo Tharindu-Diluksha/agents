@@ -4,6 +4,8 @@ import { config, paths } from "../config.js";
 import { installDependencies } from "../external/deps.js";
 import {
   addWorktree,
+  isToolchainOutput,
+  uncommittedPaths,
   checkoutOrCreateBranch,
   isWorktreeRoot,
   listWorktrees,
@@ -12,6 +14,7 @@ import {
   switchWorktreeBranch,
 } from "../external/git.js";
 import { repoSlug } from "./artifacts.js";
+import { stacksOf } from "../stacks.js";
 import { allocatePortBlock } from "./ports.js";
 import { listRuns } from "./runStore.js";
 import type { RepoTarget, RunRecord } from "./types.js";
@@ -112,9 +115,10 @@ export async function prepareWorkspaces(record: RunRecord, progress: ProgressFn)
     }
 
     if (config.worktree.installDeps) {
-      progress(`installing dependencies in ${target} …`);
-      const cmd = await installDependencies(target);
-      progress(cmd ? `dependencies installed (${cmd})` : "no package.json; skipped dependency install");
+      const stacks = stacksOf(repo);
+      progress(`installing dependencies in ${target} (${stacks.join(", ")}) …`);
+      const ran = await installDependencies(target, stacks);
+      progress(ran ? `dependencies installed: ${ran}` : "nothing to install for this stack");
     }
   }
 }
@@ -156,6 +160,11 @@ export function describeHolder(path: string): string {
   return path;
 }
 
+/** A path like `.venv/` or `node_modules/` (git lists untracked dirs with a trailing slash). */
+function isToolchainDir(p: string): boolean {
+  return isToolchainOutput(`${p.replace(/\/+$/, "")}/x`);
+}
+
 export interface RemoveResult {
   repoPath: string;
   workPath: string;
@@ -173,7 +182,14 @@ export async function removeWorkspaces(record: RunRecord, force: boolean): Promi
     if (!repo.workPath) continue;
     const workPath = repo.workPath;
     try {
-      if (existsSync(workPath)) await removeWorktree(repo.path, workPath, force);
+      if (existsSync(workPath)) {
+        // Files the orchestrator put there itself (WORKTREE_COPY_FILES, an
+        // un-ignored .venv…) don't count as the run's uncommitted work.
+        const onlyOurs = (await uncommittedPaths(workPath)).every(
+          (p) => config.worktree.copyFiles.includes(p) || isToolchainOutput(p) || isToolchainDir(p),
+        );
+        await removeWorktree(repo.path, workPath, force || onlyOurs);
+      }
       repo.workPath = null;
       results.push({ repoPath: repo.path, workPath, removed: true });
     } catch (err) {
