@@ -1,0 +1,9 @@
+{
+  "name": "jira-to-pr",
+  "displayName": "JIRA to PR",
+  "version": "0.1.0",
+  "description": "Take a JIRA ticket or a written change request through a TDD pipeline to a GitHub PR inside one Claude Code session: analyst, developer, unit/integration/E2E testers, reviewer and PR writer run as subagents, and you approve each step in chat.",
+  "author": { "name": "Tharindu Diluksha" },
+  "repository": "https://github.com/Tharindu-Diluksha/agents",
+  "keywords": ["jira", "pull-request", "tdd", "subagents", "workflow", "code-review", "testing"]
+}
