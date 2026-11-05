@@ -1,3 +1,4 @@
+import { resolveArtifactRef, toRelative } from "./artifacts.js";
 import type { ApprovalAction, PendingApproval, RoleId, RunRecord } from "./types.js";
 
 export function requestApproval(
@@ -10,7 +11,8 @@ export function requestApproval(
     role,
     action: input.action,
     summary: input.summary,
-    payloadPaths: input.payloadPaths,
+    // Roles are given absolute paths; store the short display form (resolveArtifactRef reads either).
+    payloadPaths: input.payloadPaths.map((ref) => toRelative(resolveArtifactRef(ref))),
     requestedAt: new Date().toISOString(),
   };
   record.pendingApproval = pending;

@@ -12,6 +12,7 @@ import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
 import { detectStacks, STACK_IDS, STACKS } from "../stacks.js";
+import { RepoSourceError, resolveRepoSource } from "../orchestrator/repoSources.js";
 import { createRun, listArchivedRuns, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
 import { ATTEMPT_COLUMNS, attemptRows, computeAnalytics, runRows, toCsv } from "../orchestrator/analytics.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
@@ -88,6 +89,9 @@ function slugifyTitle(title: string): string {
 }
 
 export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
+  /** Liveness for container health checks (no data, no auth). */
+  app.get("/healthz", async () => ({ ok: true }));
+
   /** Server-side defaults the UI shows (model per role, limits). */
   app.get("/api/config", async () => ({
     roles: ROLES,
@@ -96,6 +100,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     maxRunCostUsd: config.maxRunCostUsd,
     reviewAutoRoute: config.reviewAutoRoute,
     jira: describeJiraMcp(),
+    repoSources: { allowLocalPaths: config.repoSources.allowLocalPaths, allowedUrlPrefixes: config.repoSources.allowedUrlPrefixes },
     stacks: STACK_IDS.map((id) => ({ id, label: STACKS[id].label, summary: STACKS[id].guidance.summary })),
     maxConcurrentRoles: config.maxConcurrentRoles,
     ports: config.ports,
@@ -106,6 +111,10 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
   /** Detected stacks for a repo path (the launch dialog shows them before launching). */
   app.get<{ Querystring: { path?: string } }>("/api/stacks/detect", async (req, reply) => {
     const path = req.query.path ?? "";
+    if (!config.repoSources.allowLocalPaths) {
+      reply.code(400).send({ error: "local_paths_disabled" });
+      return;
+    }
     if (!path || !existsSync(path)) {
       reply.code(400).send({ error: "repo_not_found" });
       return;
@@ -129,10 +138,15 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
       return;
     }
-    const missing = parsed.data.repos.find((r) => !existsSync(r.path));
-    if (missing) {
-      reply.code(400).send({ error: "repo_not_found", repoPath: missing.path });
-      return;
+    // Each entry is a local checkout path or a Git URL (cloned/fetched into REPOS_DIR).
+    const resolved: Array<{ path: string; url: string | null }> = [];
+    for (const r of parsed.data.repos) {
+      try {
+        resolved.push(await resolveRepoSource(r.path));
+      } catch (err) {
+        reply.code(400).send({ error: err instanceof RepoSourceError ? "repo_rejected" : "repo_unavailable", repoPath: r.path, detail: errMsg(err) });
+        return;
+      }
     }
 
     if (parsed.data.source.kind === "jira") {
@@ -164,11 +178,12 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const runId = `${label}-${nanoid(6)}`;
-    const repos = parsed.data.repos.map((r) => ({
-      path: r.path,
+    const repos = parsed.data.repos.map((r, i) => ({
+      path: resolved[i]!.path,
+      ...(resolved[i]!.url ? { url: resolved[i]!.url } : {}),
       baseBranch: r.baseBranch ?? "master",
-      aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
-      stacks: r.stacks && r.stacks.length > 0 ? r.stacks : detectStacks(r.path),
+      aiGuidelinePath: resolveAiGuidelinePath(resolved[i]!.path, r.aiGuidelinePath),
+      stacks: r.stacks && r.stacks.length > 0 ? r.stacks : detectStacks(resolved[i]!.path),
     }));
     const unknown = repos.find((r) => r.stacks.length === 0);
     if (unknown) {

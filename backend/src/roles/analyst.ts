@@ -1,6 +1,6 @@
 import { ensureRoleDir } from "../orchestrator/artifacts.js";
 import { loadJiraMcpConfig, qualifiedTool } from "../external/jiraMcpConfig.js";
-import { aiGuidelineSection, artifactRelative, headerFor, orchestratorSection } from "./common.js";
+import { aiGuidelineSection, artifactRelative, headerFor, orchestratorSection, templateRef } from "./common.js";
 import type { RoleSpec } from "./types.js";
 
 export const analyst: RoleSpec = {
@@ -37,7 +37,7 @@ export const analyst: RoleSpec = {
       lines.push(
         `1. Fetch the JIRA ticket \`${ticket}\` (${record.source.kind === "jira" ? record.source.ticketUrl : ""}) using the \`${getIssue}\` tool.${search ? ` You may use \`${search}\` to look up linked or related issues.` : ""}`,
         `2. Analyse the story carefully. Call out missing acceptance criteria, ambiguous requirements, dependencies, or risks.`,
-        `3. Write the feature documentation to \`${featureDocPath}\` using the shape in \`templates/feature-doc.md\`.`,
+        `3. Write the feature documentation to \`${featureDocPath}\` using the shape in \`${templateRef("feature-doc.md")}\`.`,
         `4. If (and ONLY if) you have substantive feedback the team should see on the ticket (clarifying questions, gaps, misalignments), write a proposed comment to \`${commentPath}\` and set \`approvalRequest.action\` to \`post_jira_comment\`. Otherwise set the request to \`proceed_to_next\`.`,
         "",
         "You do NOT have permission to post the JIRA comment yourself. The orchestrator will post it after the user approves.",
@@ -57,7 +57,7 @@ export const analyst: RoleSpec = {
         ...(m?.acceptanceCriteria.length ? m.acceptanceCriteria.map((c) => `- ${c}`) : ["- (none provided)"]),
         "",
         `1. Analyse the description above. Call out missing acceptance criteria, ambiguous requirements, dependencies, or risks.`,
-        `2. Write the feature documentation to \`${featureDocPath}\` using the shape in \`templates/feature-doc.md\`. Treat the description above as the authoritative source.`,
+        `2. Write the feature documentation to \`${featureDocPath}\` using the shape in \`${templateRef("feature-doc.md")}\`. Treat the description above as the authoritative source.`,
         `3. End your turn with \`approvalRequest.action: "proceed_to_next"\`. Do NOT propose a JIRA comment — there is no ticket.`,
       );
     }

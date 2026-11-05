@@ -1,7 +1,7 @@
 import { perRepoPrDescriptionName } from "../orchestrator/artifacts.js";
 import type { RoleSpec } from "./types.js";
 import { diffBase, workDir } from "../orchestrator/workspaces.js";
-import { aiGuidelineSection, artifactRelative, BASH, headerFor, maybeAttach, orchestratorSection, primaryRepo } from "./common.js";
+import { aiGuidelineSection, artifactRelative, BASH, headerFor, maybeAttach, orchestratorSection, primaryRepo, templateRef } from "./common.js";
 
 export const prCreator: RoleSpec = {
   id: "prCreator",
@@ -44,7 +44,7 @@ export const prCreator: RoleSpec = {
       "3. Confirm the current branch isn't the base branch. If it is, emit `status: \"blocked\"` — the Developer should have been on a feature branch.",
       "4. Push the branch to `origin`.",
       "5. Compute the diff against the ref listed for that repo below (`git diff <ref>...HEAD`, `git log <ref>..HEAD`).",
-      "6. If `.github/pull_request_template.md` exists in that repo, honour its section headings. Otherwise use the shape in `templates/pr-description.md`.",
+      `6. If \`.github/pull_request_template.md\` exists in that repo, honour its section headings. Otherwise use the shape in \`${templateRef("pr-description.md")}\`.`,
       "   Include a **traceability table**: one row per acceptance criterion (AC-id) listing the unit, integration and E2E tests that cover it, taken from the test reports below.",
       "7. Write the PR description to the per-repo file listed below.",
       "",

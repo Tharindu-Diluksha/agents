@@ -11,6 +11,13 @@ export interface OidcSettings {
   clientSecret: string;
   redirectUri: string;
   postLogoutRedirectUri: string;
+  /**
+   * Base URL the backend uses to reach the provider when it differs from the
+   * issuer's (e.g. http://keycloak:8080 in Docker Compose). Back-channel
+   * requests to the issuer's origin are sent here instead; the issuer value
+   * and browser redirects are unchanged.
+   */
+  internalUrl?: string;
 }
 
 export interface LoginStart {
@@ -40,9 +47,13 @@ export class OidcClient {
   private config(): Promise<client.Configuration> {
     if (!this.cfg) {
       // Plain http is only acceptable for a local/dev Keycloak; production issuers should be https.
-      const execute = this.s.issuer.startsWith("http://") ? [client.allowInsecureRequests] : [];
+      const execute = this.s.issuer.startsWith("http://") || this.s.internalUrl?.startsWith("http://") ? [client.allowInsecureRequests] : [];
+      const rewrite = internalRewriter(this.s.issuer, this.s.internalUrl);
       this.cfg = client
-        .discovery(new URL(this.s.issuer), this.s.clientId, undefined, client.ClientSecretBasic(this.s.clientSecret), { execute })
+        .discovery(new URL(this.s.issuer), this.s.clientId, undefined, client.ClientSecretBasic(this.s.clientSecret), {
+          execute,
+          ...(rewrite ? { [client.customFetch]: (url: string, options: RequestInit) => fetch(rewrite(url), options) } : {}),
+        })
         .catch((err) => {
           this.cfg = null;
           throw new Error(`cannot reach the identity provider at ${this.s.issuer}: ${err instanceof Error ? err.message : String(err)}`);
@@ -134,4 +145,15 @@ export function rolesFrom(idClaims: Record<string, unknown>, accessToken: string
     }
   }
   return [];
+}
+
+/**
+ * Maps URLs on the issuer's origin to the internal base URL (same path), or
+ * returns null when no internal URL is configured.
+ */
+export function internalRewriter(issuer: string, internalUrl: string | undefined): ((url: string) => string) | null {
+  if (!internalUrl) return null;
+  const from = new URL(issuer).origin;
+  const to = new URL(internalUrl).origin;
+  return (url: string) => (url.startsWith(from + "/") || url === from ? to + url.slice(from.length) : url);
 }

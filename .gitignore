@@ -9,6 +9,10 @@ jira-mcp.json
 runs/
 sessions/
 worktrees/
+repos/
+
+# Server-mode secrets (see deploy/server.env.example)
+deploy/server.env
 
 # Logs
 *.log

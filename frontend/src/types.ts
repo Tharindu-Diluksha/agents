@@ -66,6 +66,8 @@ export type StackId = (typeof STACK_IDS)[number];
 
 export interface RepoTarget {
   path: string;
+  /** Git URL the run was launched with (the repo was cloned into the server's repos folder). */
+  url?: string | null;
   /** Tech stacks, primary first. Absent on runs created before stack profiles (treated as TypeScript). */
   stacks?: StackId[];
   baseBranch: string;
@@ -226,6 +228,8 @@ export interface ServerConfig {
   worktreesDir: string;
   ports: { rangeStart: number; rangeEnd: number; blockSize: number };
   syncBaseBeforePr: boolean;
+  /** Which repo inputs the launch dialog may send. Absent on older servers (local paths only). */
+  repoSources?: { allowLocalPaths: boolean; allowedUrlPrefixes: string[] };
 }
 
 export interface Slots {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api } from "../api.js";
 import { ROLE_LABELS, ROLES, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType, type StackId } from "../types.js";
 
@@ -21,11 +21,33 @@ interface RepoRow {
 
 const newRow = (): RepoRow => ({ path: "", baseBranch: "master", aiGuidelinePath: "", stack: "", detected: null, detectError: null });
 
+/** Git URL (https, ssh, scp-like git@host:owner/repo) rather than a local path. */
+function isRepoUrl(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /^[\w.-]+@[\w.-]+:/.test(value);
+}
+
+const allowLocalPaths = computed(() => serverConfig.value?.repoSources?.allowLocalPaths ?? true);
+const repoFieldLabel = computed(() => (allowLocalPaths.value ? "Absolute path or Git URL" : "Git URL"));
+const repoPlaceholder = computed(() => {
+  const prefix = serverConfig.value?.repoSources?.allowedUrlPrefixes[0];
+  const url = prefix ? `${prefix.replace(/\/+$/, "")}/repo.git` : "https://github.com/org/repo.git";
+  return allowLocalPaths.value ? `C:\\path\\to\\repo or ${url}` : url;
+});
+
 async function detect(r: RepoRow) {
   r.detected = null;
   r.detectError = null;
   const path = r.path.trim();
   if (!path) return;
+  if (isRepoUrl(path)) {
+    // Cloned at launch; the server detects the stack from the clone.
+    r.detectError = r.stack ? null : "Stack is detected after the clone";
+    return;
+  }
+  if (!allowLocalPaths.value) {
+    r.detectError = "This server only accepts Git URLs";
+    return;
+  }
   try {
     r.detected = (await api.detectStacks(path)).stacks;
   } catch {
@@ -108,7 +130,7 @@ async function submit() {
       }))
       .filter((r) => r.path.length > 0);
     if (payloadRepos.length === 0) {
-      error.value = "At least one repo path is required.";
+      error.value = allowLocalPaths.value ? "At least one repo path or Git URL is required." : "At least one Git URL is required.";
       return;
     }
 
@@ -246,8 +268,8 @@ async function submit() {
             <div class="spacer" />
             <button v-if="repos.length > 1" @click="removeRepo(i)" class="danger">Remove</button>
           </div>
-          <label>Absolute path</label>
-          <input v-model="r.path" placeholder="C:\path\to\repo" @blur="detect(r)" />
+          <label>{{ repoFieldLabel }}</label>
+          <input v-model="r.path" :placeholder="repoPlaceholder" @blur="detect(r)" />
           <div class="split3">
             <div>
               <label>Base branch</label>

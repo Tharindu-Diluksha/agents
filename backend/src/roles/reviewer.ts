@@ -9,7 +9,8 @@ import {  aiGuidelineSection,
   maybeAttach,
   orchestratorSection,
   primaryRepo,
-  stackSection
+  stackSection,
+  templateRef,
 } from "./common.js";
 import { readArtifact } from "../orchestrator/artifacts.js";
 import type { RoleSpec } from "./types.js";
@@ -87,7 +88,7 @@ export const reviewer: RoleSpec = {
       "",
       "## Output",
       "",
-      `1. Write your findings to \`${reportPath}\` using the shape in \`templates/review-report.md\`. Each finding needs a severity (BLOCKER/HIGH/MED/LOW/NIT), the file + line, a short description, and a recommended fix.`,
+      `1. Write your findings to \`${reportPath}\` using the shape in \`${templateRef("review-report.md")}\`. Each finding needs a severity (BLOCKER/HIGH/MED/LOW/NIT), the file + line, a short description, and a recommended fix.`,
       `2. Write the finding counts to \`${findingsPath}\` as JSON exactly like \`{"blocker":0,"high":1,"med":2,"low":0,"nit":3}\`. The orchestrator uses this file to route the run.`,
       "",
       "End your turn with `approvalRequest.action: \"proceed_to_next\"`. The user (or the orchestrator's auto-routing, if enabled) decides whether findings go back to the Developer or the run moves on to E2E testing.",

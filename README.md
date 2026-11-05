@@ -109,6 +109,10 @@ By default there is no login; it's meant for your own machine. For a team on a s
 
 `deploy/docker-compose.yml` starts Keycloak 26 and Postgres 16 with a ready-made realm and development users. See [deploy/README.md](deploy/README.md) for setup and a production checklist.
 
+## Server mode (Docker)
+
+To run the orchestrator itself in a container, use `docker compose -f deploy/docker-compose.yml --profile server up -d --build`. Runs are then launched by Git URL, and the server clones the repos into a volume. Claude auth comes from `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), and GitHub auth from `GH_TOKEN`. See [deploy/README.md](deploy/README.md#server-mode-everything-in-containers).
+
 ## Claude auth
 
 By default the Agent SDK reuses your local Claude CLI login — run `claude /login` once with your Max/Pro account and the orchestrator's sessions will bill against that subscription. Set `ANTHROPIC_API_KEY` in `.env` only if you want to pin billing to an API account or run headless.

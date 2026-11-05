@@ -8,7 +8,8 @@ import {  aiGuidelineSection,
   orchestratorSection,
   primaryRepo,
   TRACEABILITY_NOTE,
-  stackSection
+  stackSection,
+  templateRef,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -67,7 +68,7 @@ export const e2eTester: RoleSpec = {
       "- **flaky**: passes on re-run without changes. Stabilise it (wait for the right condition, not a sleep) and note it in the report.",
       "- **app-bug**: the application behaviour disagrees with the feature doc. Do NOT fix the app. Record it in the report with repro steps, then emit `status: \"blocked\"` with `handoff.nextRole: \"developer\"`.",
       "",
-      `**Step 4.** Commit the tests (do NOT push) and document test cases and results in \`${reportPath}\` using \`templates/e2e-test-report.md\`. On a fully green run, emit \`status: "done"\`; the orchestrator advances to the PR Creator.`,
+      `**Step 4.** Commit the tests (do NOT push) and document test cases and results in \`${reportPath}\` using \`${templateRef("e2e-test-report.md")}\`. On a fully green run, emit \`status: "done"\`; the orchestrator advances to the PR Creator.`,
       "",
       TRACEABILITY_NOTE,
       "",

@@ -13,7 +13,7 @@ import { jiraToolsFor, loadJiraMcpConfig, mcpServersOption } from "../external/j
 import { postJiraComment } from "../external/jiraMcp.js";
 import { createPr } from "../external/gh.js";
 import { clearApproval, requestApproval } from "./approvals.js";
-import { artifactPath, perRepoPrDescriptionName, readArtifact, runDir, toRelative } from "./artifacts.js";
+import { artifactPath, perRepoPrDescriptionName, readArtifact, resolveArtifactRef, runDir, toRelative } from "./artifacts.js";
 import { Semaphore } from "./concurrency.js";
 import { runEnv } from "./ports.js";
 import { refreshOverlaps } from "./overlaps.js";
@@ -578,7 +578,7 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
         results.push({ repoPath: repo.path, error: "no matching pr-description.md payload for this repo" });
         continue;
       }
-      const body = readArtifact(join(paths.repoRoot, match));
+      const body = readArtifact(resolveArtifactRef(match));
       if (!body) {
         results.push({ repoPath: repo.path, error: `payload file not found: ${match}` });
         continue;

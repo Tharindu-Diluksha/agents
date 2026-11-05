@@ -22,6 +22,7 @@ export const ROUTE_RULES: Record<string, Requirement> = {
   "GET /auth/callback": "public",
   "POST /auth/logout": "public",
   "GET /auth/me": "public",
+  "GET /healthz": "public",
 
   // Read
   "GET /api/config": "viewer",

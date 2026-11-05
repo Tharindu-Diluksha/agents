@@ -7,7 +7,8 @@ import {  aiGuidelineSection,
   orchestratorSection,
   primaryRepo,
   TRACEABILITY_NOTE,
-  bashBoundaryLine, stackSection
+  bashBoundaryLine, stackSection,
+  templateRef,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -46,7 +47,7 @@ export const integrationTester: RoleSpec = {
       "   - **app-bug** — do NOT fix production code. Record expected vs actual and repro in the report, then emit `status: \"blocked\"` with `handoff.nextRole: \"developer\"`.",
       "   - **env-missing** — the test needs infrastructure that is not available here (database, external service, credentials). Do not fake it. Mark those tests as skipped with a clear reason, and list them in the report so the user can run them elsewhere.",
       "4. Make sure the existing test suites still pass. Commit your tests. Do NOT push.",
-      `5. Write \`${reportPath}\` using \`templates/integration-test-report.md\`. When nothing is classified app-bug, emit \`status: "done"\`; the orchestrator advances to the Reviewer.`,
+      `5. Write \`${reportPath}\` using \`${templateRef("integration-test-report.md")}\`. When nothing is classified app-bug, emit \`status: "done"\`; the orchestrator advances to the Reviewer.`,
       "",
       TRACEABILITY_NOTE,
       "",

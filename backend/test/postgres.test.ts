@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
-import { createDb, migrate, MIGRATIONS, type Db } from "../src/auth/db.js";
+import { acquireDbInstanceLock, createDb, migrate, MIGRATIONS, type Db } from "../src/auth/db.js";
 import { PostgresSessionStore } from "../src/auth/sessions.js";
 import { PostgresAuditLog } from "../src/auth/audit.js";
 
@@ -83,6 +83,19 @@ describe.skipIf(!url)("Postgres sessions, audit log and migrations", () => {
     expect((await audit.list({ runId: "R-1" })).map((e) => e.action)).toEqual(["approve"]);
     expect((await audit.list({ userSub: "u-2" })).map((e) => e.outcome)).toEqual(["denied"]);
     expect((await audit.list({ limit: 1, before: all[0]!.id })).map((e) => e.action)).toEqual(["approve"]);
+  });
+
+  it("lets only one backend hold the database instance lock", async () => {
+    const release = await acquireDbInstanceLock(db);
+    const other = createDb(url!);
+    try {
+      await expect(acquireDbInstanceLock(other)).rejects.toThrow(/already using this database/);
+      await release();
+      const again = await acquireDbInstanceLock(other);
+      await again();
+    } finally {
+      await other.end();
+    }
   });
 
   it("never throws into the request path when the audit write fails", async () => {

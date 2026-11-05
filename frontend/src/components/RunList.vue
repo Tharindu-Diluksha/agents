@@ -92,7 +92,7 @@ function onLaunched(runId: string) {
             </div>
           </td>
           <td class="mono muted">
-            <div v-for="repo in r.repos" :key="repo.path">{{ repo.path }}</div>
+            <div v-for="repo in r.repos" :key="repo.path">{{ repo.url ?? repo.path }}</div>
           </td>
           <td class="muted mono">
             <div>{{ formatUsd(r.totalCostUsd) }}</div>

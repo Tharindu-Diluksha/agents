@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireInstanceLock, InstanceLockError, isProcessAlive } from "../src/orchestrator/instanceLock.js";
+import { acquireInstanceLock, holderIsLive, InstanceLockError, isProcessAlive, STALE_MS } from "../src/orchestrator/instanceLock.js";
 
 const dir = mkdtempSync(join(tmpdir(), "lock-test-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -38,6 +38,42 @@ describe("acquireInstanceLock", () => {
     writeFileSync(file, JSON.stringify({ pid: process.ppid, startedAt: "x" }));
     release();
     expect(existsSync(file)).toBe(true);
+  });
+});
+
+describe("locks across containers", () => {
+  it("two containers whose backends are both pid 1 don't take each other's lock", async () => {
+    const file = join(dir, "e.lock");
+    const releaseA = await acquireInstanceLock(file, {}, { pid: 1, host: "container-a", heartbeatMs: 50 });
+    await expect(acquireInstanceLock(file, {}, { pid: 1, host: "container-b", waitMs: 200 })).rejects.toThrow(/host container-a/);
+    releaseA();
+    const releaseB = await acquireInstanceLock(file, {}, { pid: 1, host: "container-b" });
+    expect(JSON.parse(readFileSync(file, "utf8")).host).toBe("container-b");
+    releaseB();
+  });
+
+  it("keeps a held lock's heartbeat fresh, and takes over one from a host that stopped beating", async () => {
+    const file = join(dir, "f.lock");
+    const release = await acquireInstanceLock(file, {}, { host: "me", heartbeatMs: 20 });
+    const first = JSON.parse(readFileSync(file, "utf8")).heartbeatAt;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(JSON.parse(readFileSync(file, "utf8")).heartbeatAt > first).toBe(true);
+    release();
+
+    const old = new Date(Date.now() - STALE_MS - 1000).toISOString();
+    writeFileSync(file, JSON.stringify({ pid: 1, host: "dead-container", startedAt: old, heartbeatAt: old }));
+    const takeover = await acquireInstanceLock(file, {}, { pid: 1, host: "new-container" });
+    expect(JSON.parse(readFileSync(file, "utf8")).host).toBe("new-container");
+    takeover();
+  });
+
+  it("judges liveness by pid on the same host and by heartbeat across hosts", () => {
+    const now = Date.now();
+    const me = { pid: 999999, host: "h1" };
+    expect(holderIsLive({ pid: process.pid, host: "h1", startedAt: "" }, me)).toBe(true);
+    expect(holderIsLive({ pid: 2 ** 22 + 7, host: "h1", startedAt: "" }, me)).toBe(false);
+    expect(holderIsLive({ pid: 1, host: "h2", startedAt: "", heartbeatAt: new Date(now - 5_000).toISOString() }, me, now)).toBe(true);
+    expect(holderIsLive({ pid: 1, host: "h2", startedAt: "", heartbeatAt: new Date(now - STALE_MS - 1).toISOString() }, me, now)).toBe(false);
   });
 });
 

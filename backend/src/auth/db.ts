@@ -81,3 +81,30 @@ export async function migrate(db: Db): Promise<number[]> {
   if (ran.length) log.info("db.migrated", { versions: ran });
   return ran;
 }
+
+/** Key for the backend's Postgres advisory lock (any constant shared by all instances). */
+const INSTANCE_LOCK_KEY = 41720251;
+
+/**
+ * Holds a session-level Postgres advisory lock for the life of the process, so
+ * two backends sharing one database (e.g. two containers) can't both run.
+ * Returns a release function, or throws if another backend holds it.
+ */
+export async function acquireDbInstanceLock(db: Db): Promise<() => Promise<void>> {
+  const client = await db.connect();
+  const r = await client.query<{ ok: boolean }>("SELECT pg_try_advisory_lock($1) AS ok", [INSTANCE_LOCK_KEY]);
+  if (!r.rows[0]?.ok) {
+    client.release();
+    throw new Error("another orchestrator backend is already using this database (Postgres advisory lock is held). Stop it first.");
+  }
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    try {
+      await client.query("SELECT pg_advisory_unlock($1)", [INSTANCE_LOCK_KEY]);
+    } finally {
+      client.release();
+    }
+  };
+}

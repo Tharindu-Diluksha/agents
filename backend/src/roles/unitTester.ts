@@ -7,7 +7,8 @@ import {  aiGuidelineSection,
   orchestratorSection,
   primaryRepo,
   TRACEABILITY_NOTE,
-  bashBoundaryLine, stackSection
+  bashBoundaryLine, stackSection,
+  templateRef,
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -54,7 +55,7 @@ export const unitTester: RoleSpec = {
         "3. Run them and confirm each new test fails **for the right reason** (an assertion fails, or the module/export under test doesn't exist yet) — not because of a typo or broken setup in the test itself.",
         "4. Make sure tests that existed before still pass.",
         "5. Commit the new tests (e.g. `test: add failing unit tests for <feature>`). Do NOT push.",
-        `6. Write \`${reportPath}\` using \`templates/unit-test-report.md\` (fill the RED section), then emit \`status: "done"\`. The orchestrator hands over to the Developer.`,
+        `6. Write \`${reportPath}\` using \`${templateRef("unit-test-report.md")}\` (fill the RED section), then emit \`status: "done"\`. The orchestrator hands over to the Developer.`,
       );
     } else {
       lines.push(

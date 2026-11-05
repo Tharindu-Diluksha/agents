@@ -6,9 +6,14 @@ export interface RunCmdResult {
   stderr: string;
 }
 
-export function runCmd(cmd: string, args: string[], cwd: string, opts: { timeoutMs?: number } = {}): Promise<RunCmdResult> {
+export function runCmd(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  opts: { timeoutMs?: number; env?: Record<string, string> } = {},
+): Promise<RunCmdResult> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, shell: false, env: process.env, timeout: opts.timeoutMs });
+    const child = spawn(cmd, args, { cwd, shell: false, env: { ...process.env, ...opts.env }, timeout: opts.timeoutMs });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => {
@@ -241,4 +246,28 @@ export async function syncWithBase(worktreePath: string, baseBranch: string, opt
     return { status: "skipped", ref, reason: `merge failed: ${why}${fetchError ? ` (fetch: ${fetchError})` : ""}` };
   }
   return { status: "conflicts", ref, behind, files };
+}
+
+// ---------------------------------------------------------------------------
+// Clones for runs launched by Git URL
+// ---------------------------------------------------------------------------
+
+/** Never wait for a username/password prompt: fail fast when credentials are missing. */
+const NON_INTERACTIVE = { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "echo", SSH_ASKPASS: "echo", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" };
+
+/** `git clone` into `dir` (which must not exist yet). */
+export async function cloneRepo(url: string, dir: string, timeoutMs = 15 * 60_000): Promise<void> {
+  const r = await runCmd("git", ["clone", "--no-tags", url, dir], process.cwd(), { timeoutMs, env: NON_INTERACTIVE });
+  if (r.code !== 0) throw new Error(`git clone ${url} failed: ${(r.stderr.trim() || r.stdout.trim()).split("\n").slice(-3).join(" ")}`);
+}
+
+/** `git fetch --prune origin` in an existing clone. */
+export async function fetchOrigin(dir: string, timeoutMs = 5 * 60_000): Promise<void> {
+  const r = await runCmd("git", ["fetch", "--prune", "--no-tags", "origin"], dir, { timeoutMs, env: NON_INTERACTIVE });
+  if (r.code !== 0) throw new Error(`git fetch in ${dir} failed: ${(r.stderr.trim() || r.stdout.trim()).split("\n").slice(-3).join(" ")}`);
+}
+
+export async function originUrl(dir: string): Promise<string | null> {
+  const r = await runCmd("git", ["remote", "get-url", "origin"], dir);
+  return r.code === 0 ? r.stdout.trim() : null;
 }
