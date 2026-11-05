@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api } from "../api.js";
-import { ROLE_LABELS, ROLES, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType } from "../types.js";
+import { ROLE_LABELS, ROLES, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType, type StackId } from "../types.js";
 
 const emit = defineEmits<{
   (e: "launched", runId: string): void;
@@ -12,6 +12,29 @@ interface RepoRow {
   path: string;
   baseBranch: string;
   aiGuidelinePath: string;
+  /** "" = auto-detect */
+  stack: StackId | "";
+  /** What auto-detection found for the current path (shown as a hint). */
+  detected: StackId[] | null;
+  detectError: string | null;
+}
+
+const newRow = (): RepoRow => ({ path: "", baseBranch: "master", aiGuidelinePath: "", stack: "", detected: null, detectError: null });
+
+async function detect(r: RepoRow) {
+  r.detected = null;
+  r.detectError = null;
+  const path = r.path.trim();
+  if (!path) return;
+  try {
+    r.detected = (await api.detectStacks(path)).stacks;
+  } catch {
+    r.detectError = "path not found";
+  }
+}
+
+function stackLabel(id: StackId): string {
+  return serverConfig.value?.stacks.find((s) => s.id === id)?.label ?? id;
 }
 
 type Mode = "jira" | "manual";
@@ -24,7 +47,7 @@ const manualTitle = ref("");
 const manualDescription = ref("");
 const manualCriteria = ref<string[]>([""]);
 
-const repos = ref<RepoRow[]>([{ path: "", baseBranch: "master", aiGuidelinePath: "" }]);
+const repos = ref<RepoRow[]>([newRow()]);
 const submitting = ref(false);
 const error = ref<string | null>(null);
 
@@ -57,7 +80,7 @@ onMounted(async () => {
 });
 
 function addRepo() {
-  repos.value.push({ path: "", baseBranch: "master", aiGuidelinePath: "" });
+  repos.value.push(newRow());
 }
 function removeRepo(idx: number) {
   if (repos.value.length === 1) return;
@@ -80,6 +103,8 @@ async function submit() {
         path: r.path.trim(),
         baseBranch: r.baseBranch.trim() || undefined,
         aiGuidelinePath: r.aiGuidelinePath.trim() === "" ? undefined : r.aiGuidelinePath.trim(),
+        // A chosen stack overrides detection; "" lets the server detect it.
+        stacks: r.stack ? [r.stack] : undefined,
       }))
       .filter((r) => r.path.length > 0);
     if (payloadRepos.length === 0) {
@@ -222,11 +247,23 @@ async function submit() {
             <button v-if="repos.length > 1" @click="removeRepo(i)" class="danger">Remove</button>
           </div>
           <label>Absolute path</label>
-          <input v-model="r.path" placeholder="C:\path\to\repo" />
-          <div class="split">
+          <input v-model="r.path" placeholder="C:\path\to\repo" @blur="detect(r)" />
+          <div class="split3">
             <div>
               <label>Base branch</label>
               <input v-model="r.baseBranch" placeholder="master" />
+            </div>
+            <div>
+              <label>Stack</label>
+              <select v-model="r.stack">
+                <option value="">Auto-detect</option>
+                <option v-for="s in serverConfig?.stacks ?? []" :key="s.id" :value="s.id">{{ s.label }}</option>
+              </select>
+              <div class="muted" style="font-size: 11px; margin-top: 2px">
+                <template v-if="r.detectError">{{ r.detectError }}</template>
+                <template v-else-if="r.detected && r.detected.length">Detected: {{ r.detected.map(stackLabel).join(" + ") }}</template>
+                <template v-else-if="r.detected">Nothing detected — choose a stack</template>
+              </div>
             </div>
             <div>
               <label>AI guideline doc path (optional, relative to repo)</label>
@@ -277,6 +314,8 @@ label { font-size: 12px; color: var(--muted); margin-top: 8px; display: block; }
 .repos { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .repo-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
 .split { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+.split3 { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 10px; }
+@media (max-width: 640px) { .split3 { grid-template-columns: 1fr; } }
 .jira-box { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--panel2); }
 .jira-test { margin-top: 6px; font-size: 12px; }
 .jira-test.ok { color: var(--success); }

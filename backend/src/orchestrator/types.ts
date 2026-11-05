@@ -1,3 +1,4 @@
+import type { StackId } from "../stacks.js";
 export const ROLES = [
   "analyst",
   "developer",
@@ -107,6 +108,8 @@ export interface RepoTarget {
   branch?: string | null;
   /** Ref the worktree started from (`origin/<base>` or `<base>`); diffs compare against it. */
   baseRef?: string | null;
+  /** Tech stacks of this repo, primary first (detected at launch or chosen). Absent = TypeScript (older runs). */
+  stacks?: StackId[];
 }
 
 export type SourceType = "feature" | "change" | "fix";

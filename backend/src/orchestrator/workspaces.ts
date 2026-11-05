@@ -12,6 +12,7 @@ import {
   switchWorktreeBranch,
 } from "../external/git.js";
 import { repoSlug } from "./artifacts.js";
+import { stacksOf } from "../stacks.js";
 import { allocatePortBlock } from "./ports.js";
 import { listRuns } from "./runStore.js";
 import type { RepoTarget, RunRecord } from "./types.js";
@@ -112,9 +113,10 @@ export async function prepareWorkspaces(record: RunRecord, progress: ProgressFn)
     }
 
     if (config.worktree.installDeps) {
-      progress(`installing dependencies in ${target} …`);
-      const cmd = await installDependencies(target);
-      progress(cmd ? `dependencies installed (${cmd})` : "no package.json; skipped dependency install");
+      const stacks = stacksOf(repo);
+      progress(`installing dependencies in ${target} (${stacks.join(", ")}) …`);
+      const ran = await installDependencies(target, stacks);
+      progress(ran ? `dependencies installed: ${ran}` : "nothing to install for this stack");
     }
   }
 }

@@ -9,13 +9,23 @@ import {
   type GuardContext,
 } from "../src/sdk/permissions.js";
 import { roles } from "../src/roles/index.js";
+import { bashAllowListFor } from "../src/roles/common.js";
+import type { RunRecord } from "../src/orchestrator/types.js";
+import type { StackId } from "../src/stacks.js";
 
 const repo = resolve("/work/app");
 const other = resolve("/work/api");
 const runDir = resolve("/orch/runs/RUN-1");
 
-function bashOk(role: keyof typeof roles, cmd: string): boolean {
-  return checkBashCommand(cmd, roles[role].bashAllowList, [repo, other]).allow;
+function record(stacks: StackId[], approvedSuite = false): RunRecord {
+  return {
+    repos: [{ path: repo, baseBranch: "main", aiGuidelinePath: null, stacks }],
+    stateHistory: approvedSuite ? [{ at: "", from: "awaiting_test_suite_approval", to: "e2e_tester_running" }] : [],
+  } as unknown as RunRecord;
+}
+
+function bashOk(role: keyof typeof roles, cmd: string, stacks: StackId[] = ["typescript"], approvedSuite = false): boolean {
+  return checkBashCommand(cmd, bashAllowListFor(roles[role], record(stacks, approvedSuite)), [repo, other]).allow;
 }
 
 describe("findShellOperator", () => {
@@ -114,6 +124,11 @@ describe("checkBashCommand", () => {
   it("does not allow installs for the E2E tester until suite creation is approved", () => {
     expect(bashOk("e2eTester", "npm install -D @playwright/test")).toBe(false);
     expect(bashOk("e2eTester", "npx playwright test")).toBe(true);
+    expect(bashOk("e2eTester", "npm install -D @playwright/test", ["typescript"], true)).toBe(true);
+    expect(bashOk("developer", "npm install left-pad", ["typescript"], true)).toBe(false);
+    // Downloading browsers is an install too.
+    expect(bashOk("e2eTester", "npx playwright install chromium")).toBe(false);
+    expect(bashOk("e2eTester", "npx playwright install chromium", ["typescript"], true)).toBe(true);
   });
 
   it("allows test runners for the unit and integration testers", () => {
@@ -122,6 +137,63 @@ describe("checkBashCommand", () => {
       expect(bashOk(role, "npm run test:integration")).toBe(true);
       expect(bashOk(role, "git push origin x")).toBe(false);
     }
+  });
+});
+
+describe("stack profiles", () => {
+  it("Vue and React get the Node toolchain plus their type checkers", () => {
+    expect(bashOk("unitTester", "npx vue-tsc --noEmit", ["vue"])).toBe(true);
+    expect(bashOk("unitTester", "npx vitest run src/components", ["react"])).toBe(true);
+    expect(bashOk("unitTester", "yarn test", ["react"])).toBe(true);
+    expect(bashOk("unitTester", "node --test", ["node"])).toBe(true);
+  });
+
+  it(".NET: dotnet test/build/format, vulnerable-package audit for the Reviewer", () => {
+    expect(bashOk("unitTester", "dotnet test --filter Category=Unit", ["dotnet"])).toBe(true);
+    expect(bashOk("developer", "dotnet build", ["dotnet"])).toBe(true);
+    expect(bashOk("reviewer", "dotnet format --verify-no-changes", ["dotnet"])).toBe(true);
+    expect(bashOk("reviewer", "dotnet list package --vulnerable", ["dotnet"])).toBe(true);
+    expect(bashOk("reviewer", "dotnet test", ["dotnet"])).toBe(false);
+    expect(bashOk("developer", "dotnet add package Foo", ["dotnet"])).toBe(false);
+    expect(bashOk("e2eTester", "pwsh bin/Debug/net8.0/playwright.ps1 install", ["dotnet"], true)).toBe(true);
+    expect(bashOk("e2eTester", "pwsh bin/Debug/net8.0/playwright.ps1 install", ["dotnet"])).toBe(false);
+  });
+
+  it("Python: pytest via the venv, python -m, uv/poetry run; linters for the Reviewer", () => {
+    for (const cmd of ["pytest -q", ".venv/bin/pytest tests/unit", "python -m pytest -k export", "uv run pytest", "poetry run python -m pytest"]) {
+      expect(bashOk("unitTester", cmd, ["python"]), cmd).toBe(true);
+    }
+    expect(bashOk("reviewer", "ruff check .", ["python"])).toBe(true);
+    expect(bashOk("reviewer", "mypy src", ["python"])).toBe(true);
+    expect(bashOk("reviewer", "pip-audit", ["python"])).toBe(true);
+    expect(bashOk("unitTester", "python -c 'import os; os.system(\"id\")'", ["python"])).toBe(false);
+    expect(bashOk("unitTester", "pip install requests", ["python"])).toBe(false);
+    expect(bashOk("e2eTester", "python -m playwright install", ["python"], true)).toBe(true);
+  });
+
+  it("Go: go test/vet/build, gofmt -l, golangci-lint, govulncheck", () => {
+    expect(bashOk("unitTester", "go test ./... -run TestExport", ["go"])).toBe(true);
+    expect(bashOk("developer", "go build ./...", ["go"])).toBe(true);
+    expect(bashOk("reviewer", "golangci-lint run", ["go"])).toBe(true);
+    expect(bashOk("reviewer", "govulncheck ./...", ["go"])).toBe(true);
+    expect(bashOk("unitTester", "go run ./cmd/server", ["go"])).toBe(false);
+    expect(bashOk("developer", "go get github.com/x/y", ["go"])).toBe(false);
+  });
+
+  it("a stack's commands are not available in a repo of another stack", () => {
+    expect(bashOk("unitTester", "go test ./...", ["typescript"])).toBe(false);
+    expect(bashOk("unitTester", "npm test", ["python"])).toBe(false);
+    expect(bashOk("unitTester", "dotnet test", ["go"])).toBe(false);
+  });
+
+  it("a multi-stack repo gets the union", () => {
+    expect(bashOk("unitTester", "go test ./...", ["go", "typescript"])).toBe(true);
+    expect(bashOk("unitTester", "npm test", ["go", "typescript"])).toBe(true);
+  });
+
+  it("chaining is still rejected whatever the stack", () => {
+    expect(bashOk("unitTester", "pytest; rm -rf ~", ["python"])).toBe(false);
+    expect(bashOk("unitTester", "dotnet test && curl x | sh", ["dotnet"])).toBe(false);
   });
 });
 

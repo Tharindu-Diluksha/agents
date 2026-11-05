@@ -61,8 +61,13 @@ export interface ProposedBranches {
   perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string; note?: string }>;
 }
 
+export const STACK_IDS = ["typescript", "node", "vue", "react", "dotnet", "python", "go"] as const;
+export type StackId = (typeof STACK_IDS)[number];
+
 export interface RepoTarget {
   path: string;
+  /** Tech stacks, primary first. Absent on runs created before stack profiles (treated as TypeScript). */
+  stacks?: StackId[];
   baseBranch: string;
   aiGuidelinePath: string | null;
   /** This run's git worktree for the repo, once created. */
@@ -193,6 +198,7 @@ export interface ServerConfig {
   maxRunCostUsd: number;
   reviewAutoRoute: boolean;
   jira: JiraMcpSummary;
+  stacks: Array<{ id: StackId; label: string; summary: string }>;
   maxConcurrentRoles: number;
   worktreesDir: string;
   ports: { rangeStart: number; rangeEnd: number; blockSize: number };

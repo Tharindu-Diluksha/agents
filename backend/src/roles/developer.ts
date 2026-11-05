@@ -1,6 +1,5 @@
 import type { RunRecord } from "../orchestrator/types.js";
-import {
-  aiGuidelineSection,
+import {  aiGuidelineSection,
   artifactRelative,
   BASH,
   endOfTurnExample,
@@ -8,6 +7,7 @@ import {
   maybeAttach,
   orchestratorSection,
   primaryRepo,
+  bashBoundaryLine, stackSection
 } from "./common.js";
 import type { RoleSpec } from "./types.js";
 import { workDir } from "../orchestrator/workspaces.js";
@@ -33,13 +33,9 @@ export const developer: RoleSpec = {
     BASH.gitRestore,
     BASH.gitStash,
     /^git\s+fetch(\s|$)/,
-    ...BASH.testRunners,
-    /^npm\s+run\s+build(\s|$)/,
-    /^pnpm\s+run\s+build(\s|$)/,
-    /^node\s+(--version|-v)$/,
-    BASH.catPackageJson,
     BASH.ls,
   ],
+  capabilities: ["test", "lint", "build", "inspect"],
   writeScope: "repos-and-run",
   needsWorkspace: true,
   maxTurns: 100,
@@ -92,8 +88,9 @@ export const developer: RoleSpec = {
       "",
       "## Boundaries",
       "- You MUST NOT push to any remote, and MUST NOT switch branches. The orchestrator manages branches; the PR Creator pushes.",
-      "- Bash is limited to one command at a time (no `;`, `&&`, pipes or redirects, except a leading `cd <repo> && `): git status/diff/log/show/add/commit/restore/stash/fetch, npm/pnpm test*/typecheck*/lint*/build, npx vitest/jest/tsc, cat package.json, ls/dir.",
+      bashBoundaryLine(record, "git status/diff/log/show/add/commit/restore/stash/fetch, ls/dir", developer),
       "- File edits are limited to the target repo(s) and this run's artifact folder.",
+      stackSection(record, "developer"),
       aiGuidelineSection(record, "developer"),
       orchestratorSection(ctx),
     );

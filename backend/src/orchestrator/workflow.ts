@@ -6,6 +6,7 @@ import { log } from "../log.js";
 import { runRoleAgent } from "../sdk/runRole.js";
 import { roles as roleRegistry } from "../roles/index.js";
 import { planApproved } from "../roles/developer.js";
+import { bashAllowListFor } from "../roles/common.js";
 import { readReviewFindings } from "../roles/reviewer.js";
 import type { RoleInputCtx, RoleSpec } from "../roles/types.js";
 import { jiraToolsFor, loadJiraMcpConfig, mcpServersOption } from "../external/jiraMcpConfig.js";
@@ -649,7 +650,7 @@ async function runRoleAsync(
       model,
       repoPaths: record.repos.map(workDir),
       writeRoots: writeRootsFor(record, spec.writeScope),
-      bashAllowList: [...spec.bashAllowList, ...(spec.extraBashAllowList?.(record) ?? [])],
+      bashAllowList: bashAllowListFor(spec, record),
       extraTools: jira.tools,
       mcpServers: jira.mcpServers,
       env: runEnv(record),

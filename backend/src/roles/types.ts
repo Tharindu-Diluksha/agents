@@ -1,5 +1,6 @@
 import type { JiraAccess } from "../external/jiraMcpConfig.js";
 import type { RoleId, RunRecord } from "../orchestrator/types.js";
+import type { Capability } from "../stacks.js";
 
 /**
  * Where file-writing tools (Write/Edit/MultiEdit/NotebookEdit) may write.
@@ -14,9 +15,12 @@ export interface RoleSpec {
   title: string;
   promptFile: string;
   allowedTools: string[];
+  /** Stack-independent Bash patterns (git, ls). */
   bashAllowList: RegExp[];
-  /** Extra Bash patterns that depend on run state (e.g. installs after an approval). */
-  extraBashAllowList?(record: RunRecord): RegExp[];
+  /** Toolchain capabilities; each repo's stack profile turns them into Bash patterns (see stacks.ts). */
+  capabilities: Capability[];
+  /** Capabilities granted only in some run states (e.g. installs after an approval). */
+  extraCapabilities?(record: RunRecord): Capability[];
   writeScope: WriteScope;
   /** Works in the target repos, so the run's worktrees must exist before it starts. */
   needsWorkspace: boolean;

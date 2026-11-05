@@ -10,6 +10,7 @@ import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
+import { detectStacks, STACK_IDS, STACKS } from "../stacks.js";
 import { createRun, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
 import {
@@ -26,6 +27,8 @@ const RepoBody = z.object({
   path: z.string().min(1),
   baseBranch: z.string().optional(),
   aiGuidelinePath: z.string().optional(),
+  /** Explicit stacks; omitted or empty = auto-detect from the repo's files. */
+  stacks: z.array(z.enum(STACK_IDS)).optional(),
 });
 
 const JiraSourceBody = z.object({
@@ -90,11 +93,22 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
     maxRunCostUsd: config.maxRunCostUsd,
     reviewAutoRoute: config.reviewAutoRoute,
     jira: describeJiraMcp(),
+    stacks: STACK_IDS.map((id) => ({ id, label: STACKS[id].label, summary: STACKS[id].guidance.summary })),
     maxConcurrentRoles: config.maxConcurrentRoles,
     ports: config.ports,
     syncBaseBeforePr: config.syncBaseBeforePr,
     worktreesDir: paths.worktreesDir,
   }));
+
+  /** Detected stacks for a repo path (the launch dialog shows them before launching). */
+  app.get<{ Querystring: { path?: string } }>("/api/stacks/detect", async (req, reply) => {
+    const path = req.query.path ?? "";
+    if (!path || !existsSync(path)) {
+      reply.code(400).send({ error: "repo_not_found" });
+      return;
+    }
+    return { stacks: detectStacks(path) };
+  });
 
   /** Global role-session slots (shared by all runs). */
   app.get("/api/slots", async () => ({
@@ -151,7 +165,17 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       path: r.path,
       baseBranch: r.baseBranch ?? "master",
       aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
+      stacks: r.stacks && r.stacks.length > 0 ? r.stacks : detectStacks(r.path),
     }));
+    const unknown = repos.find((r) => r.stacks.length === 0);
+    if (unknown) {
+      reply.code(400).send({
+        error: "stack_not_detected",
+        repoPath: unknown.path,
+        detail: `Could not tell the tech stack of ${unknown.path}; choose one in the launch dialog (supported: ${STACK_IDS.join(", ")}).`,
+      });
+      return;
+    }
     const models = Object.fromEntries(
       Object.entries(parsed.data.models ?? {}).filter(([, v]) => typeof v === "string" && v.length > 0),
     ) as Partial<Record<RoleId, string>>;

@@ -1,4 +1,4 @@
-import type { JiraMcpTestResult, Overlap, RoleId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
+import type { JiraMcpTestResult, Overlap, RoleId, StackId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -24,6 +24,9 @@ export const api = {
   async refreshOverlaps(id: string): Promise<{ overlaps: Overlap[] }> {
     return json(await fetch(`/api/runs/${id}/overlaps/refresh`, { method: "POST" }));
   },
+  async detectStacks(path: string): Promise<{ stacks: StackId[] }> {
+    return json(await fetch(`/api/stacks/detect?path=${encodeURIComponent(path)}`));
+  },
   async getSlots(): Promise<Slots> {
     return json(await fetch("/api/slots"));
   },
@@ -41,7 +44,7 @@ export const api = {
   },
   async launchRun(input: {
     source: RunSource;
-    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string }>;
+    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string; stacks?: StackId[] }>;
     models?: Partial<Record<RoleId, string>>;
   }): Promise<{ runId: string }> {
     return json(

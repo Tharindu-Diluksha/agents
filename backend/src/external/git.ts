@@ -170,10 +170,21 @@ export async function changedFiles(worktreePath: string, baseRef: string): Promi
   const diff = await runCmd("git", ["diff", "--name-only", mb.stdout.trim()], worktreePath);
   if (diff.code !== 0) throw new Error(`git diff failed: ${diff.stderr.trim()}`);
   const untracked = await runCmd("git", ["ls-files", "--others", "--exclude-standard"], worktreePath);
-  const files = [...diff.stdout.split("\n"), ...(untracked.code === 0 ? untracked.stdout.split("\n") : [])]
-    .map((f) => f.trim())
-    .filter(Boolean);
+  const tracked = diff.stdout.split("\n").map((f) => f.trim()).filter(Boolean);
+  // Untracked dependency/build output (an un-ignored .venv, bin/obj…) isn't the run's work.
+  const added = (untracked.code === 0 ? untracked.stdout.split("\n") : []).map((f) => f.trim()).filter((f) => f && !isToolchainOutput(f));
+  const files = [...tracked, ...added];
   return [...new Set(files)].sort();
+}
+
+/**
+ * Dependency/build output directories (a venv, node_modules, .NET bin/obj…).
+ * Untracked files under them aren't a run's changes even when a repo forgot
+ * to .gitignore them.
+ */
+const TOOLCHAIN_DIRS = new Set(["node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "bin", "obj", ".gradle", "dist", "coverage", "playwright-report", "test-results"]);
+export function isToolchainOutput(path: string): boolean {
+  return path.split(/[\\/]/).slice(0, -1).some((seg) => TOOLCHAIN_DIRS.has(seg));
 }
 
 export type SyncResult =
