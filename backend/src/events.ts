@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "./config.js";
-import type { AttemptUsage, Overlap, RoleId, RunState } from "./orchestrator/types.js";
+import type { ActivityEntry, AttemptUsage, Overlap, RoleId, RunState } from "./orchestrator/types.js";
 
 export type RunEvent =
   | { type: "run.created"; runId: string; label: string; repoPaths: string[] }
@@ -19,6 +19,8 @@ export type RunEvent =
   | { type: "role.usage"; runId: string; role: RoleId; usage: AttemptUsage; costUsd: number; final: boolean }
   /** Files this run changes that another active run on the same repo also changes. */
   | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
+  /** A user acted on the run (see orchestrator/activity.ts). */
+  | { type: "run.activity"; runId: string; entry: ActivityEntry }
   /** The run was archived or deleted and is gone from the run list. */
   | { type: "run.removed"; runId: string; archived: boolean }
   | { type: "approval.requested"; runId: string; role: RoleId; action: string; summary: string; payloadPaths: string[] }

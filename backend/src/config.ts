@@ -98,5 +98,42 @@ export const config = {
   },
   /** Bring the branch up to date with its base (rebase, or merge once pushed) before the PR Creator runs. */
   syncBaseBeforePr: (process.env.SYNC_BASE_BEFORE_PR ?? "true").toLowerCase() !== "false",
+  auth: authConfig(),
+  /** Postgres for login sessions and the audit log. Required when AUTH_MODE=keycloak; optional otherwise (audit only). */
+  databaseUrl: process.env.DATABASE_URL ?? "",
   branchNameTemplate: process.env.BRANCH_NAME_TEMPLATE ?? "feature/{ticket}-{slug}",
 } as const;
+
+export type AuthMode = "none" | "keycloak";
+
+function authConfig() {
+  const mode = (process.env.AUTH_MODE ?? "none").toLowerCase() as AuthMode;
+  const port = Number(process.env.PORT ?? 5174);
+  return {
+    /** `none`: no login, everyone is a local admin (single-user on localhost). `keycloak`: OIDC login + roles. */
+    mode: mode === "keycloak" ? "keycloak" : ("none" as AuthMode),
+    /** Realm issuer URL, e.g. http://localhost:8080/realms/orchestrator */
+    issuer: process.env.KEYCLOAK_ISSUER ?? "",
+    clientId: process.env.KEYCLOAK_CLIENT_ID ?? "orchestrator-web",
+    clientSecret: process.env.KEYCLOAK_CLIENT_SECRET ?? "",
+    /** URL users open in the browser (redirect URIs are built from it). */
+    publicUrl: (process.env.PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/+$/, ""),
+    /** ≥ 32 chars. Encrypts refresh tokens at rest and the short-lived login cookie. */
+    sessionSecret: process.env.SESSION_SECRET ?? "",
+    /** `postgres` (default) or `memory` (sessions lost on restart; for trying it out). */
+    sessionStore: (process.env.SESSION_STORE ?? "postgres").toLowerCase() === "memory" ? ("memory" as const) : ("postgres" as const),
+    idleMinutes: num("SESSION_IDLE_MINUTES", 8 * 60),
+    maxHours: num("SESSION_MAX_HOURS", 7 * 24),
+  };
+}
+
+/** Throws a readable error when AUTH_MODE=keycloak is set but incomplete. */
+export function validateAuthConfig(c: typeof config): void {
+  if (c.auth.mode !== "keycloak") return;
+  const missing: string[] = [];
+  if (!c.auth.issuer) missing.push("KEYCLOAK_ISSUER");
+  if (!c.auth.clientSecret) missing.push("KEYCLOAK_CLIENT_SECRET");
+  if (c.auth.sessionSecret.length < 32) missing.push("SESSION_SECRET (at least 32 characters)");
+  if (c.auth.sessionStore === "postgres" && !c.databaseUrl) missing.push("DATABASE_URL (or SESSION_STORE=memory)");
+  if (missing.length > 0) throw new Error(`AUTH_MODE=keycloak needs: ${missing.join(", ")}. See .env.example and deploy/README.md.`);
+}

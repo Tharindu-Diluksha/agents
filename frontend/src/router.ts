@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import RunList from "./components/RunList.vue";
 import RunDetail from "./components/RunDetail.vue";
 import AnalyticsPage from "./components/AnalyticsPage.vue";
+import AuditPage from "./components/AuditPage.vue";
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -9,5 +10,6 @@ export const router = createRouter({
     { path: "/", component: RunList },
     { path: "/runs/:id", component: RunDetail, props: true },
     { path: "/analytics", component: AnalyticsPage },
+    { path: "/audit", component: AuditPage },
   ],
 });

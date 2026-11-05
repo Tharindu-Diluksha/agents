@@ -25,6 +25,7 @@ export function createRun(input: {
   source: RunSource;
   repos: RepoTarget[];
   models?: Partial<Record<RoleId, string>>;
+  createdBy?: { sub: string; name: string };
 }): RunRecord {
   if (input.repos.length === 0) throw new Error("createRun requires at least one repo");
   const now = new Date().toISOString();
@@ -40,6 +41,7 @@ export function createRun(input: {
     stateHistory: [],
     pendingApproval: null,
     models: input.models,
+    createdBy: input.createdBy,
     fixIterations: 0,
     workspace: "worktree",
   };

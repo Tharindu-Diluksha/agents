@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
+import type { AuthHandle } from "../auth/plugin.js";
 import { subscribe, subscribeAll } from "../events.js";
 
-export async function registerWsRoutes(app: FastifyInstance): Promise<void> {
+/** Sockets are tied to the user's session: logout or expiry closes them (code 4401). */
+export async function registerWsRoutes(app: FastifyInstance, auth: AuthHandle): Promise<void> {
   app.get("/ws/runs/:id", { websocket: true }, (socket, req) => {
     const { id } = req.params as { id: string };
     const unsubscribe = subscribe(id, (ev) => {
@@ -11,12 +13,13 @@ export async function registerWsRoutes(app: FastifyInstance): Promise<void> {
         /* socket may be closing */
       }
     });
-    socket.on("close", unsubscribe);
-    socket.on("error", unsubscribe);
+    const untrack = auth.trackSocket(req.sessionHash, socket);
+    socket.on("close", () => (unsubscribe(), untrack()));
+    socket.on("error", () => (unsubscribe(), untrack()));
     socket.send(JSON.stringify({ type: "ws.hello", runId: id }));
   });
 
-  app.get("/ws/runs", { websocket: true }, (socket) => {
+  app.get("/ws/runs", { websocket: true }, (socket, req) => {
     const unsubscribe = subscribeAll((ev) => {
       try {
         socket.send(JSON.stringify(ev));
@@ -24,8 +27,9 @@ export async function registerWsRoutes(app: FastifyInstance): Promise<void> {
         /* ignore */
       }
     });
-    socket.on("close", unsubscribe);
-    socket.on("error", unsubscribe);
+    const untrack = auth.trackSocket(req.sessionHash, socket);
+    socket.on("close", () => (unsubscribe(), untrack()));
+    socket.on("error", () => (unsubscribe(), untrack()));
     socket.send(JSON.stringify({ type: "ws.hello", scope: "all" }));
   });
 }

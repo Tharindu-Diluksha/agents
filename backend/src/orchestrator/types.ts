@@ -159,6 +159,10 @@ export interface RunRecord {
   ports?: PortBlock | null;
   /** Last computed file overlaps with other active runs. */
   overlaps?: Overlap[];
+  /** Who launched the run (absent on runs from before authentication). */
+  createdBy?: { sub: string; name: string };
+  /** User actions on this run, oldest first (see orchestrator/activity.ts). */
+  activity?: ActivityEntry[];
 }
 
 /** Files changed by this run that another active run on the same repo also changes. */
@@ -173,4 +177,12 @@ export interface Overlap {
 export interface PortBlock {
   base: number;
   count: number;
+}
+
+export interface ActivityEntry {
+  at: string;
+  by: { sub: string; name: string };
+  /** e.g. launch, approve, reject, edit, skip, jump, abort, remove_worktrees, archive */
+  action: string;
+  details?: Record<string, unknown>;
 }

@@ -1,8 +1,19 @@
-import type { Analytics, JiraMcpTestResult, Overlap, RoleId, StackId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
+import { redirectToLogin } from "./auth.js";
+import type { AuditEntry, Analytics, JiraMcpTestResult, Overlap, RoleId, StackId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots } from "./types.js";
 
 async function json<T>(resp: Response): Promise<T> {
+  if (resp.status === 401) redirectToLogin(); // session expired or ended in Keycloak
   if (!resp.ok) {
     const detail = await resp.text().catch(() => "");
+    if (resp.status === 403) {
+      let required = "";
+      try {
+        required = (JSON.parse(detail) as { required?: string }).required ?? "";
+      } catch {
+        /* not JSON */
+      }
+      throw new Error(required ? `You need the ${required} role for this.` : "You don't have permission for this.");
+    }
     throw new Error(`${resp.status} ${resp.statusText}: ${detail}`);
   }
   return (await resp.json()) as T;
@@ -47,6 +58,13 @@ export const api = {
   },
   analyticsCsvUrl(includeArchived: boolean): string {
     return `/api/analytics/export.csv?archived=${includeArchived}`;
+  },
+  async getAudit(q: { before?: number; runId?: string; action?: string } = {}): Promise<{ enabled: boolean; entries: AuditEntry[] }> {
+    const p = new URLSearchParams();
+    if (q.before) p.set("before", String(q.before));
+    if (q.runId) p.set("runId", q.runId);
+    if (q.action) p.set("action", q.action);
+    return json(await fetch(`/api/audit?${p}`));
   },
   async getSlots(): Promise<Slots> {
     return json(await fetch("/api/slots"));

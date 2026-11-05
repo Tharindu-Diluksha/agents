@@ -9,6 +9,8 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:5174",
       "/ws": { target: "ws://127.0.0.1:5174", ws: true },
+      // Login/logout/callback are served by the backend.
+      "/auth": "http://127.0.0.1:5174",
     },
   },
   build: {
