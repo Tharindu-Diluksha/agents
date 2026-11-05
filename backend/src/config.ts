@@ -35,6 +35,15 @@ export const paths = {
 export const config = {
   port: Number(process.env.PORT ?? 5174),
   host: process.env.HOST ?? "127.0.0.1",
+  /**
+   * Extra hostnames accepted in Host/Origin headers besides localhost,
+   * 127.0.0.1 and ::1 (comma-separated). Only needed when you deliberately
+   * expose the UI beyond this machine, e.g. HOST=0.0.0.0 with your LAN name.
+   */
+  allowedHosts: (process.env.ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean),
   logLevel: process.env.LOG_LEVEL ?? "info",
   // Optional. The SDK will reuse the local Claude CLI login (claude /login) when
   // this is unset, so most users won't need it.

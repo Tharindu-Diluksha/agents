@@ -53,6 +53,7 @@ Six load-bearing design choices that are easy to miss by reading one file:
 
 ## Where things live
 
+- `backend/src/security.ts` — request guard (registered in `index.ts` **after** `@fastify/websocket`): Host allowlist (blocks DNS rebinding) and Origin allowlist for WebSocket upgrades and non-GET requests (blocks other websites reading `/ws/*` or driving the API). Requests without an Origin (curl) pass. Extra hostnames via `ALLOWED_HOSTS`. Refused upgrades close their socket explicitly, since the websocket plugin's cleanup never runs for them.
 - `backend/src/orchestrator/workflow.ts` — the state machine. Start here when debugging flow bugs.
 - `backend/src/orchestrator/recovery.ts` — startup recovery for mid-flight runs.
 - `backend/src/sdk/runRole.ts` — the only place the Agent SDK is actually invoked. Streams messages to the event bus, captures `session_id` and cost/usage from the SDK messages, and wraps the loop in a transient-error retry.
