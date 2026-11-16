@@ -22,6 +22,8 @@ export interface RoleSpec {
   /** Capabilities granted only in some run states (e.g. installs after an approval). */
   extraCapabilities?(record: RunRecord): Capability[];
   writeScope: WriteScope;
+  /** Narrows `writeScope` in some run states (e.g. the Developer writes only the run folder while planning). */
+  writeScopeFor?(record: RunRecord): WriteScope;
   /** Works in the target repos, so the run's worktrees must exist before it starts. */
   needsWorkspace: boolean;
   /**

@@ -52,6 +52,7 @@ const calls: Array<{
   mcpServers: string[];
   cwd: string;
   repoPaths: string[];
+  writeRoots: string[];
   env: Record<string, string>;
 }> = [];
 
@@ -63,6 +64,7 @@ vi.mock("../src/sdk/runRole.js", () => ({
       runId: args.runId,
       cwd: args.cwd,
       repoPaths: args.repoPaths,
+      writeRoots: args.writeRoots,
       env: args.env ?? {},
       role: args.role,
       state,
@@ -139,7 +141,7 @@ function happyScript(runId: string): Script {
 }
 
 let seq = 0;
-function newRun(models?: Record<string, string>, jira = false, label?: string): string {
+function newRun(models?: Record<string, string>, jira = false, label?: string, workspace?: "worktree" | "in-place"): string {
   const runId = `RUN-${++seq}`;
   createRun({
     runId,
@@ -149,6 +151,7 @@ function newRun(models?: Record<string, string>, jira = false, label?: string): 
       : { kind: "manual", type: "feature", title: "Add widget", description: "d", acceptanceCriteria: ["a"] },
     repos: [{ path: repoPath, baseBranch: "main", aiGuidelinePath: null }],
     models,
+    workspace,
   });
   return runId;
 }
@@ -546,6 +549,50 @@ describe("parallel runs", () => {
     await settle(runId, isGateOrEnd);
     expect(calls.find((c) => c.role === "developer")!.cwd).toBe(repoPath);
     expect(existsSync(join(tmp, "worktrees", runId))).toBe(false);
+  });
+
+  it("branch mode: creates the feature branch in the user's checkout after the branch gate", async () => {
+    const runId = newRun(undefined, false, undefined, "in-place");
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve"); // feature doc
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve"); // plan
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_branch_names");
+    expect(git(repoPath, "branch", "--show-current")).toBe("main"); // untouched until the gate
+    try {
+      await workflow.resumeAfterApproval(runId, "approve");
+      await settle(runId, isGateOrEnd);
+      const branch = loadRun(runId)!.repos[0]!.branch!;
+      expect(git(repoPath, "branch", "--show-current")).toBe(branch);
+      expect(loadRun(runId)!.repos[0]!.baseRef).toBe("main");
+      expect(calls.filter((c) => c.runId === runId && c.role !== "analyst").every((c) => c.cwd === repoPath)).toBe(true);
+      expect(existsSync(join(tmp, "worktrees", runId))).toBe(false);
+    } finally {
+      workflow.abortRun(runId);
+      git(repoPath, "checkout", "-q", "main");
+    }
+  });
+
+  it("lets the Developer write only the run folder while planning", async () => {
+    const runId = newRun();
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve"); // feature doc
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve"); // plan
+    await settle(runId, isGateOrEnd);
+    await workflow.resumeAfterApproval(runId, "approve"); // branch names
+    await settle(runId, isGateOrEnd);
+    const dev = calls.filter((c) => c.runId === runId && c.role === "developer");
+    const planning = dev.find((c) => c.state === "developer_planning")!;
+    const implementing = dev.find((c) => c.state === "developer_implementing")!;
+    expect(planning.writeRoots).toEqual([join(tmp, "runs", runId)]);
+    expect(planning.prompt).toContain("Edits to the target repo(s) are blocked until the user approves the plan");
+    expect(implementing.writeRoots).toContain(loadRun(runId)!.repos[0]!.workPath);
+    workflow.abortRun(runId);
   });
 });
 

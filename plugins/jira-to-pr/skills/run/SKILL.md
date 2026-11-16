@@ -14,6 +14,8 @@ You are the **orchestrator** of a feature-development pipeline running inside th
 - stop at every **gate** and get the user's decision in chat,
 - perform the mutating actions yourself, **only after the user approves them**: posting a JIRA comment, creating the branch, syncing with the base, pushing, opening the PR.
 
+The run's code changes happen in **`WORK`**: either the user's own checkout (branch mode) or an isolated git worktree of it (worktree mode). The user picks one in setup.
+
 Request: **$ARGUMENTS**
 
 ## Keep your own context small
@@ -27,13 +29,18 @@ This session's context is shared by every step, so it gets more expensive as it 
 ## 1. Setup
 
 1. **Repo.** `git rev-parse --show-toplevel` → `REPO`. Work only in this repo.
-2. **Clean tree.** `git status --porcelain --untracked-files=no` must be empty. If not, show it and ask the user to commit or stash first; stop until they confirm.
-3. **Base branch.** `git symbolic-ref --short refs/remotes/origin/HEAD` (strip `origin/`), else `main`, else `master` → `BASE`. Confirm it at the plan gate.
-4. **Source.** If `$ARGUMENTS` contains a JIRA key (`[A-Z][A-Z0-9]+-[0-9]+`, possibly inside an Atlassian URL) the source is **jira**; otherwise **manual**. If `$ARGUMENTS` is empty, ask the user for a ticket key or a description.
-5. **Run folder.** `RUN_ID` = lower-case ticket key, or a short slug of the description, plus `-YYYYMMDD-HHMM`. `RUN` = `REPO/.jira-to-pr/RUN_ID`. Create it. Make sure `.jira-to-pr/` is listed in `REPO/.git/info/exclude` (append it if missing) so run files are never committed.
-6. **Templates** are in `${CLAUDE_SKILL_DIR}/templates/` → `TEMPLATES`. Pass this absolute path to every subagent.
-7. **Stack.** Read only the *Detecting the stack* section of `${CLAUDE_SKILL_DIR}/reference/stacks.md` and apply it to `REPO` (look at `package.json` dependencies, `*.sln`/`*.csproj`, `pyproject.toml`/`requirements*.txt`, `go.mod`) → `STACK` (one or more of `typescript`, `node`, `vue`, `react`, `dotnet`, `python`, `go`). If nothing matches, ask the user which stack it is. `STACK_GUIDE` = the absolute path of that `stacks.md`. Confirm the stack at the plan gate.
-8. Create `RUN/state.md` (see *State and resuming*) and `RUN/ledger.md` (see `${CLAUDE_SKILL_DIR}/reference/ledger.md`).
+2. **Base branch.** `git symbolic-ref --short refs/remotes/origin/HEAD` (strip `origin/`), else `main`, else `master` → `BASE`. Confirm it at the plan gate.
+3. **Source.** If `$ARGUMENTS` contains a JIRA key (`[A-Z][A-Z0-9]+-[0-9]+`, possibly inside an Atlassian URL) the source is **jira**; otherwise **manual**. If `$ARGUMENTS` is empty, ask the user for a ticket key or a description.
+4. **Run folder.** `RUN_ID` = lower-case ticket key, or a short slug of the description, plus `-YYYYMMDD-HHMM`. `RUN` = `REPO/.jira-to-pr/RUN_ID`. Create it. Make sure `.jira-to-pr/` is listed in `REPO/.git/info/exclude` (append it if missing) so run files are never committed.
+5. **Templates** are in `${CLAUDE_SKILL_DIR}/templates/` → `TEMPLATES`. Pass this absolute path to every subagent.
+6. **Stack.** Read only the *Detecting the stack* section of `${CLAUDE_SKILL_DIR}/reference/stacks.md` and apply it to `REPO`, at the root and in each top-level folder (look at `package.json` dependencies, `angular.json`, `*.sln`/`*.csproj`, `pyproject.toml`/`requirements*.txt`, `go.mod`) → `STACK` (one or more of `typescript`, `node`, `vue`, `react`, `angular`, `dotnet`, `python`, `go`; for a monorepo name each stack's folder, e.g. `angular in prep-app/ + dotnet in prep-api/`). If nothing matches, ask the user which stack it is. `STACK_GUIDE` = the absolute path of that `stacks.md`. Confirm the stack at the plan gate.
+7. **Workspace.** Ask the user where the run works (AskUserQuestion when available) → `WORKSPACE`:
+   - **Isolated worktree** (recommended): a separate checkout of `REPO` for this run, with its own dependencies. The user's checkout is never touched, so they can keep working in it and run other features in parallel.
+   - **New branch in this checkout**: the subagents work directly in `REPO`, and at Gate C you create the feature branch here. Uses the checkout's existing dependencies; the user shouldn't edit files here while the run is active.
+8. **Prepare `WORK`.**
+   - **Branch mode:** `WORK` = `REPO`. `git status --porcelain --untracked-files=no` must be empty, and `git branch --show-current` must be `BASE` (the plan is made against what is checked out). If not, show it and ask the user to commit/stash or switch first (or to choose a worktree instead); stop until they confirm.
+   - **Worktree mode:** `WORK` = `RUN/worktree`. `git fetch origin <BASE>` (skip if there is no `origin`), then `git worktree add --detach "<WORK>" origin/<BASE>` (or `<BASE>` when there is no remote). Install its dependencies in each stack folder of `WORK` (`cd "<WORK>/<folder>" && …`): Node — `npm ci` with a `package-lock.json` (`pnpm install --frozen-lockfile` / `yarn install --frozen-lockfile` with their lockfiles, else `npm install`); .NET — `dotnet restore`; Python — `uv sync` / `poetry install` when locked, else `python -m venv .venv` and `.venv`'s pip `install -r` each `requirements*.txt`; Go — `go mod download`. If an install fails, show the error and ask how to proceed. If the tests need local files that aren't committed (e.g. `.env.test`), ask before copying them from `REPO`. The worktree lives under the excluded `.jira-to-pr/` folder; if a test runner started at `REPO`'s root also picks up files there, tell the user it can be added to that runner's ignore list.
+9. Create `RUN/state.md` (see *State and resuming*) and `RUN/ledger.md` (see `${CLAUDE_SKILL_DIR}/reference/ledger.md`).
 
 ## 2. Load the source → `RUN/ticket.md`
 
@@ -48,16 +55,18 @@ Every task message contains, as a short list:
 
 ```
 Phase: <PLAN | IMPLEMENT | FIX | MERGE-CONFLICTS | RED | GREEN | — >
-Repo: <REPO>
+Repo: <WORK>
 Base: <BASE or base ref to diff against>
 Run folder: <RUN>
 Templates: <TEMPLATES>
-Stack: <STACK, e.g. "python" or "react + go">
+Stack: <STACK, e.g. "python", "react + go" or "angular in prep-app/ + dotnet in prep-api/">
 Stack guide: <STACK_GUIDE>
 Source: <jira KEY URL | manual>
 Read: <paths of the artifacts/reports this step needs>
 Notes / feedback: <user feedback from the last gate, hand-back notes, orchestrator notes — or "none">
 ```
+
+In **worktree mode** add one more line: `Working copy: <WORK> is an isolated worktree for this run. Run every command from it (cd "<WORK>" && …, or cd into a stack folder under it) and edit only files under it; <REPO> is the user's own checkout — don't touch it.` Subagents start in the session's folder (`REPO`), so without this they would work in the wrong checkout.
 
 **Same role again in this run** (developer PLAN → IMPLEMENT → FIX, unit-tester RED → GREEN, a role re-run after "request changes"): if you can resume that role's earlier subagent (e.g. `SendMessage` to its agent id), do that and send only the new phase and inputs — it keeps its memory of the earlier step. Otherwise start a fresh one; the artifacts carry the context.
 
@@ -65,7 +74,7 @@ After **every** subagent call:
 1. Parse its `## Result` block. If it is missing, ask that subagent once for it; if still missing, treat the step as blocked.
 2. Append a ledger row (tokens / tool uses / duration exactly as the Agent tool reports them, or `n/a`).
 3. Update `state.md`.
-4. Check it stayed in bounds: `git branch --show-current` is still the run's branch (once created) and nothing was pushed (`git status -sb` shows no new upstream). If a subagent switched branches, pushed or opened a PR, **stop** and tell the user.
+4. Check it stayed in bounds: `git -C "<WORK>" branch --show-current` is still the run's branch (once created) and nothing was pushed (`git -C "<WORK>" status -sb` shows no new upstream). In worktree mode also check that `REPO` itself didn't change (`git -C "<REPO>" status --porcelain --untracked-files=no` is as it was at setup). If a subagent switched branches, pushed, opened a PR or edited the user's checkout, **stop** and tell the user.
 
 ## 4. The pipeline
 
@@ -92,7 +101,7 @@ Each gate shows: the step, artifact paths, a 3–6 line summary, open questions.
 
 - **Gate A — feature doc:** Approve · Request changes (re-run analyst with the feedback) · Stop. If the analyst wrote `proposed-jira-comment.md` (jira source only): ask separately — Post comment · Edit then post · Don't post. To post, use the JIRA MCP add-comment tool with the file's text (or the user's edit). If posting fails, show the error and ask again.
 - **Gate B — plan:** show the plan's file list and test plan in brief, the base branch and the detected stack. Approve · Request changes (re-run developer PLAN with feedback) · Change base or stack · Stop.
-- **Gate C — branch:** propose `feature/<ticket-key-or-slug>-<short-slug>` (lower-case, `[a-z0-9/-]`). If `git branch --list <name>` or `git worktree list` shows it in use, add a suffix. Approve · Use another name (Other) · Stop. Then: `git fetch origin <BASE>` (if there is an `origin`), and `git switch -c <name> origin/<BASE>` (or `<BASE>` when there is no remote).
+- **Gate C — branch:** propose `feature/<ticket-key-or-slug>-<short-slug>` (lower-case, `[a-z0-9/-]`). If `git branch --list <name>` or `git worktree list` shows it in use, add a suffix. Approve · Use another name (Other) · Stop. Then, in `WORK`: `git -C "<WORK>" fetch origin <BASE>` (if there is an `origin`), and `git -C "<WORK>" switch -c <name> origin/<BASE>` (or `<BASE>` when there is no remote). In worktree mode this turns the detached worktree into the feature branch; the user's checkout stays on its own branch.
 - **Gate D — review:** show `review-findings.json` counts and the top findings. Send back for fixes (→ developer FIX with `review-report.md`) · Continue to E2E · Stop. Recommend "send back" when blocker + high > 0.
 - **Gate E — E2E suite (only when the e2e-tester returns `needs-approval`):** show what it proposes to scaffold. Approve (re-run e2e-tester with "suite creation approved") · Skip E2E (go to J) · Stop.
 - **Gate F — PR:** show the title and a short summary; the user can open `pr-description.md`. Approve and open PR · Request changes (re-run pr-writer) · Stop.
@@ -112,6 +121,8 @@ Count fix loops in `state.md`. After **3**, stop and ask the user: Continue (res
 
 ### J — Sync with base (you)
 
+Run every git command in J and L inside `WORK` (`git -C "<WORK>" …`, and `gh` from `WORK`).
+
 1. `git fetch origin <BASE>` (skip if there is no remote; use `<BASE>` instead of `origin/<BASE>` below).
 2. If `git merge-base --is-ancestor origin/<BASE> HEAD` succeeds, the branch is up to date → K.
 3. If the branch was never pushed (no `origin/<branch>`): `git rebase origin/<BASE>`. On conflicts: `git rebase --abort`, then go to step 4. Otherwise: `git merge --no-edit origin/<BASE>`.
@@ -130,6 +141,7 @@ Keep `RUN/state.md` current after every step:
 
 ```
 run: <RUN_ID>   source: <jira KEY | manual>   repo: <REPO>   base: <BASE>   stack: <STACK>
+workspace: <branch | worktree>   work: <WORK>
 branch: <name or —>   step: <A..L>   status: <running | waiting-gate X | blocked | done>
 fix_loops: <n>
 agents: analyst=<agent id>, developer=<agent id>, unit-tester=<agent id>, …
@@ -138,17 +150,19 @@ history:
 - …
 ```
 
-If the user re-runs `/jira-to-pr:run` while an unfinished run folder exists for the same ticket/slug, offer to **resume** it from `state.md` (subagent ids from an earlier session may no longer resume — start fresh ones, the artifacts carry the context).
+If the user re-runs `/jira-to-pr:run` while an unfinished run folder exists for the same ticket/slug, offer to **resume** it from `state.md` (subagent ids from an earlier session may no longer resume — start fresh ones, the artifacts carry the context). In worktree mode reuse `WORK` from `state.md`; if it no longer exists, re-create it with `git worktree add "<WORK>" <branch>` (or detached at the base before Gate C) and reinstall its dependencies.
 
 ## 6. Finish
 
 When the PR is open (or the user stops):
 
 1. Finalise `ledger.md` (totals row).
-2. Tell the user: the PR URL, the fix-loop count, the run folder, and that **`/usage`** (alias `/cost`) shows this session's total cost and usage, including the subagents. For a cost comparison with the orchestrator app, see the plugin README.
+2. **Worktree mode:** ask whether to remove the worktree (the branch and the PR stay). If yes: `git worktree remove "<WORK>"`; if git refuses because of uncommitted files, show them and ask before using `--force`.
+3. Tell the user: the PR URL, the fix-loop count, the run folder, and that **`/usage`** (alias `/cost`) shows this session's total cost and usage, including the subagents. For a cost comparison with the orchestrator app, see the plugin README.
 
 ## Boundaries
 
 - Only you push, open the PR, switch/create branches, rebase/merge with the base, or post to JIRA — and only after the matching gate.
 - Never force-push. Never edit files yourself to "help" a subagent; send it back with feedback instead.
 - Never store secrets in the run folder. Never commit the run folder.
+- In worktree mode the user's checkout (`REPO`) is read-only for the whole run: only `RUN` and `WORK` change.

@@ -64,6 +64,28 @@ describe("stripCdPrefix", () => {
   it("keeps cd into anything else", () => {
     expect(stripCdPrefix("cd /etc && ls", [repo])).toBe("cd /etc && ls");
   });
+  it("strips cd into a folder inside a run repo (monorepo projects)", () => {
+    const web = resolve(repo, "prep-app");
+    expect(stripCdPrefix(`cd ${web} && npm test`, [repo])).toBe("npm test");
+    expect(stripCdPrefix(`cd "${web}" && npm test`, [repo])).toBe("npm test");
+    // Relative to the session's cwd.
+    expect(stripCdPrefix("cd prep-app && npm test", [repo], repo)).toBe("npm test");
+    expect(stripCdPrefix("cd ../api && npm test", [repo, other], repo)).toBe("npm test");
+  });
+  it("keeps cd that escapes the repo, enters .git, or relies on shell expansion", () => {
+    for (const cmd of [
+      `cd ${resolve(repo, "..")} && npm test`,
+      `cd ${repo}/../../etc && npm test`,
+      "cd ../../etc && npm test",
+      `cd ${resolve(repo, ".git", "hooks")} && ls`,
+      "cd ~ && npm test",
+      "cd $HOME && npm test",
+    ]) {
+      expect(stripCdPrefix(cmd, [repo], repo), cmd).toBe(cmd);
+    }
+    // A relative path needs a cwd to resolve against.
+    expect(stripCdPrefix("cd prep-app && npm test", [repo])).toBe("cd prep-app && npm test");
+  });
 });
 
 describe("checkBashCommand", () => {
@@ -75,6 +97,20 @@ describe("checkBashCommand", () => {
     expect(bashOk("developer", "npx vitest run src/foo.test.ts")).toBe(true);
     expect(bashOk("developer", "npm test 2>&1")).toBe(true);
     expect(bashOk("developer", `cd ${other} && npm test`)).toBe(true);
+    expect(bashOk("developer", `cd ${resolve(repo, "prep-app")} && npm test`)).toBe(true);
+    expect(bashOk("developer", `cd ${resolve(repo, "..", "elsewhere")} && npm test`)).toBe(false);
+  });
+
+  it("Angular: ng test only without watch mode; ng build and lint", () => {
+    const ng = (cmd: string) => bashOk("developer", cmd, ["angular"]);
+    expect(ng("npx ng test --watch=false --browsers=ChromeHeadless")).toBe(true);
+    expect(ng("ng test --no-watch")).toBe(true);
+    expect(ng("npx ng test")).toBe(false); // would watch forever
+    expect(ng("npx ng build")).toBe(true);
+    expect(ng("npx ng lint")).toBe(true);
+    expect(ng("npm test -- --watch=false")).toBe(true);
+    expect(ng("npx ng serve")).toBe(false);
+    expect(bashOk("developer", "npx ng build", ["dotnet"])).toBe(false);
   });
 
   it("rejects chaining after an allowed prefix (the old bypass)", () => {

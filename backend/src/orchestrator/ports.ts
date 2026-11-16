@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, dirname, join } from "node:path";
-import { stacksOf } from "../stacks.js";
+import { projectsOf, stacksOf } from "../stacks.js";
 import { config } from "../config.js";
 import type { PortBlock, RunRecord } from "./types.js";
 
@@ -50,8 +50,9 @@ export function runEnv(record: RunRecord): Record<string, string> {
 
   // Python: put each worktree's .venv first on PATH, so `pytest`/`python` use the project's dependencies.
   const venvBins = record.repos
-    .filter((r) => r.workPath && stacksOf(r).includes("python"))
-    .map((r) => join(r.workPath!, ".venv", process.platform === "win32" ? "Scripts" : "bin"))
+    .filter((r) => r.workPath)
+    .flatMap((r) => projectsOf(r).filter((p) => p.stack === "python").map((p) => (p.dir === "." ? r.workPath! : join(r.workPath!, p.dir))))
+    .map((d) => join(d, ".venv", process.platform === "win32" ? "Scripts" : "bin"))
     .filter((d) => existsSync(d));
   if (venvBins.length > 0) {
     env.PATH = [...venvBins, process.env.PATH ?? ""].join(delimiter);

@@ -2,8 +2,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectStacks, STACK_IDS, STACKS, stacksOf } from "../src/stacks.js";
-import { installSteps } from "../src/external/deps.js";
+import { detectProjects, detectStacks, projectsFor, projectsOf, STACK_IDS, STACKS, stacksOf } from "../src/stacks.js";
+import { installSteps, spawnable } from "../src/external/deps.js";
 import { isToolchainOutput } from "../src/external/git.js";
 import { runEnv } from "../src/orchestrator/ports.js";
 import { stackSection } from "../src/roles/common.js";
@@ -42,6 +42,51 @@ describe("detectStacks", () => {
     expect(detectStacks(repo({ "go.mod": "module x" }))).toEqual(["go"]);
   });
 
+  it("detects Angular before the generic TypeScript profile", () => {
+    expect(detectStacks(repo({ "package.json": pkg({ "@angular/core": "^20" }, { typescript: "^5" }) }))).toEqual(["angular"]);
+    expect(detectStacks(repo({ "package.json": pkg({}), "angular.json": "{}" }))).toEqual(["angular"]);
+  });
+
+  it("finds a monorepo's stacks in top-level folders, with their folder", () => {
+    const mono = repo({
+      "prep-app/package.json": pkg({ "@angular/core": "^20" }),
+      "prep-app/angular.json": "{}",
+      "prep-api/prep-api.csproj": "<Project/>",
+      "prep-api/bin/Debug/x.csproj": "<Project/>",
+      "node_modules/x/package.json": pkg({ react: "^19" }),
+      ".github/package.json": pkg({}),
+      "README.md": "",
+    });
+    expect(detectProjects(mono)).toEqual([
+      { dir: "prep-api", stack: "dotnet" },
+      { dir: "prep-app", stack: "angular" },
+    ]);
+    expect(detectStacks(mono)).toEqual(["dotnet", "angular"]);
+  });
+
+  it("doesn't repeat a root stack for its sub-folders", () => {
+    const sln = repo({ "App.sln": "", "Api/Api.csproj": "<Project/>", "web/package.json": pkg({ vue: "^3" }) });
+    expect(detectProjects(sln)).toEqual([
+      { dir: ".", stack: "dotnet" },
+      { dir: "web", stack: "vue" },
+    ]);
+  });
+
+  it("keeps the detected folders of the stacks the user chose", () => {
+    const detected = [
+      { dir: "prep-api", stack: "dotnet" as const },
+      { dir: "prep-app", stack: "angular" as const },
+    ];
+    expect(projectsFor(["angular", "dotnet"], detected)).toEqual([
+      { dir: "prep-app", stack: "angular" },
+      { dir: "prep-api", stack: "dotnet" },
+    ]);
+    // A chosen stack detection didn't find lives at the root.
+    expect(projectsFor(["python"], detected)).toEqual([{ dir: ".", stack: "python" }]);
+    expect(projectsOf({ stacks: ["go"] })).toEqual([{ dir: ".", stack: "go" }]);
+    expect(projectsOf({})).toEqual([{ dir: ".", stack: "typescript" }]);
+  });
+
   it("reports every stack of a mixed repo and nothing for an unknown one", () => {
     expect(detectStacks(repo({ "go.mod": "module x", "package.json": pkg({ react: "^19" }) }))).toEqual(["react", "go"]);
     expect(detectStacks(repo({ "README.md": "" }))).toEqual([]);
@@ -77,6 +122,13 @@ describe("installSteps", () => {
       expect.stringMatching(/install -r requirements-dev\.txt$/),
     ]);
     expect(cmds(repo({ "pyproject.toml": "" }), ["python"]).at(-1)).toMatch(/pip(\.exe)? install -e \.$/);
+  });
+
+  it("runs the Node package managers through cmd.exe on Windows only", () => {
+    expect(spawnable({ cmd: "npm", args: ["ci"] }, "win32")).toEqual({ cmd: "cmd.exe", args: ["/d", "/s", "/c", "npm", "ci"] });
+    expect(spawnable({ cmd: "pnpm", args: ["install"] }, "win32").cmd).toBe("cmd.exe");
+    expect(spawnable({ cmd: "npm", args: ["ci"] }, "linux")).toEqual({ cmd: "npm", args: ["ci"] });
+    expect(spawnable({ cmd: "dotnet", args: ["restore"] }, "win32")).toEqual({ cmd: "dotnet", args: ["restore"] });
   });
 
   it("installs every stack of a mixed repo", () => {
@@ -130,6 +182,30 @@ describe("stackSection", () => {
     expect(stackSection(record, "e2eTester")).toContain("An existing E2E suite looks like");
     expect(stackSection(record, "reviewer")).toContain("dotnet list package --vulnerable");
     expect(stackSection(record, "analyst")).toBe("");
+  });
+
+  it("tells a monorepo's roles which folder each stack's commands run from", () => {
+    const record = {
+      runId: "R",
+      repos: [
+        {
+          path: "/u/mono",
+          workPath: join("/w", "mono"),
+          stacks: ["angular", "dotnet"],
+          projects: [
+            { dir: "prep-app", stack: "angular" },
+            { dir: "prep-api", stack: "dotnet" },
+          ],
+        },
+      ],
+    } as unknown as RunRecord;
+    const dev = stackSection(record, "developer");
+    expect(dev).toContain("Angular (`prep-app/`) + C# / .NET (`prep-api/`)");
+    const app = join("/w", "mono", "prep-app").replace(/\\/g, "/");
+    expect(dev).toContain(`- _Angular_ in \`${app}\``);
+    expect(dev).toContain(`cd "${app}" && <command>`);
+    expect(dev).not.toMatch(/cd "[^"]*\\/);
+    expect(dev).toContain("--watch=false");
   });
 
   it("every profile has complete guidance", () => {

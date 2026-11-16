@@ -8,7 +8,7 @@ import {
 } from "../orchestrator/artifacts.js";
 import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
 import type { RoleInputCtx, RoleSpec } from "./types.js";
-import { STACKS, stackBashPatterns, stacksOf, type Capability, type StackId } from "../stacks.js";
+import { projectsOf, STACKS, stackBashPatterns, stacksOf, type Capability, type StackId, type StackProject } from "../stacks.js";
 import { workDir } from "../orchestrator/workspaces.js";
 import { portsPromptLines } from "../orchestrator/ports.js";
 
@@ -198,7 +198,7 @@ const CAPABILITY_WORDS: Record<Capability, string> = {
 /** The "Bash boundaries" prompt line for a role, naming its toolchain capabilities. */
 export function bashBoundaryLine(record: RunRecord, gitPart: string, spec: RoleSpec): string {
   const caps = [...spec.capabilities, ...(spec.extraCapabilities?.(record) ?? [])].map((c) => CAPABILITY_WORDS[c]);
-  return `- One Bash command at a time (no \`;\`, \`&&\`, pipes or redirects, except a leading \`cd <repo> && \`): ${gitPart}, plus the stack's own commands to ${caps.join(", ")} — see the Stack section. Anything else is blocked.`;
+  return `- One Bash command at a time (no \`;\`, \`&&\`, pipes or redirects, except a leading \`cd <repo or a folder inside it> && \`): ${gitPart}, plus the stack's own commands to ${caps.join(", ")} — see the Stack section. Anything else is blocked.`;
 }
 
 const ROLE_EXAMPLE_CAPS: Partial<Record<RoleId, Array<Exclude<Capability, "inspect">>>> = {
@@ -225,6 +225,11 @@ const ROLE_GUIDANCE: Partial<Record<RoleId, GuidanceKey[]>> = {
   e2eTester: ["e2e"],
 };
 
+/** A path as Bash takes it on every platform: forward slashes (Bash treats unquoted `\` as an escape). */
+function shellPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
 /**
  * "Stack" section for a role prompt: each repo's stacks with the guidance
  * relevant to the role (test frameworks and conventions, E2E suite, review
@@ -235,11 +240,21 @@ export function stackSection(record: RunRecord, role: RoleId): string {
   if (!keys) return "";
   const lines = ["", "## Stack", ""];
   for (const repo of record.repos) {
-    const stacks = stacksOf(repo);
-    lines.push(`**\`${workDir(repo)}\`** — ${stacks.map((s) => STACKS[s].label).join(" + ")}`);
-    for (const id of stacks) {
+    const root = workDir(repo);
+    const projects = projectsOf(repo);
+    const inFolders = projects.some((p) => p.dir !== ".");
+    const where = (p: StackProject) => (inFolders ? ` (\`${p.dir === "." ? "." : `${p.dir}/`}\`)` : "");
+    lines.push(`**\`${root}\`** — ${projects.map((p) => STACKS[p.stack].label + where(p)).join(" + ")}`);
+    if (inFolders) {
+      lines.push(
+        `- Monorepo: run each stack's commands from its own folder, e.g. \`cd "${shellPath(join(root, projects.find((p) => p.dir !== ".")!.dir))}" && <command>\` — from the repo root they fail or test the wrong project. Write paths with forward slashes: Bash drops unquoted backslashes.`,
+      );
+    }
+    for (const p of projects) {
+      const id = p.stack;
       const g = STACKS[id].guidance;
-      if (stacks.length > 1) lines.push(`- _${STACKS[id].label}:_ ${g.summary}`);
+      const folder = p.dir === "." ? "" : ` in \`${shellPath(join(root, p.dir))}\``;
+      if (projects.length > 1) lines.push(`- _${STACKS[id].label}_${folder}: ${g.summary}`);
       else lines.push(`- ${g.summary}`);
       const examples = capabilityExamples(id, role);
       if (examples) lines.push(`  - Commands: ${examples}`);

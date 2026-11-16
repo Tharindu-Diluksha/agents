@@ -28,7 +28,7 @@ export function evaluateToolUse(toolName: string, input: Record<string, unknown>
   }
   if (toolName === "Bash") {
     const cmd = typeof input.command === "string" ? input.command : "";
-    return checkBashCommand(cmd, ctx.bashAllowList, ctx.repoPaths);
+    return checkBashCommand(cmd, ctx.bashAllowList, ctx.repoPaths, ctx.cwd);
   }
   if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
     return checkWritePath(input.file_path, ctx.writeRoots, ctx.cwd);
@@ -50,16 +50,16 @@ const DANGEROUS_ARGS = [/(^|\s)--output(=|\s|$)/, /(^|\s)--upload-pack\b/, /(^|\
  *   sit inside single quotes, or (for operators other than substitution)
  *   inside double quotes. This closes the `git status; rm -rf ~` bypass the
  *   start-anchored allowlist regexes otherwise allow.
- * - A leading `cd <repo> && ` is permitted when `<repo>` is one of the run's
- *   repos; the remainder is what gets checked.
+ * - A leading `cd <dir> && ` is permitted when `<dir>` is one of the run's
+ *   repos or a folder inside one; the remainder is what gets checked.
  * - A trailing `2>&1` is tolerated.
  */
-export function checkBashCommand(raw: string, allowList: RegExp[], repoPaths: string[]): GuardDecision {
+export function checkBashCommand(raw: string, allowList: RegExp[], repoPaths: string[], cwd?: string): GuardDecision {
   let cmd = raw.trim();
   if (!cmd) return { allow: false, reason: "empty command" };
   if (/[\r\n]/.test(cmd)) return { allow: false, reason: "multi-line commands are not allowed" };
 
-  cmd = stripCdPrefix(cmd, repoPaths);
+  cmd = stripCdPrefix(cmd, repoPaths, cwd);
   cmd = cmd.replace(/\s+2>&1$/, "");
 
   const meta = findShellOperator(cmd);
@@ -113,24 +113,35 @@ export function findShellOperator(cmd: string): string | null {
 
 /**
  * If the command is `cd <path> && <rest>` and <path> is one of the run's repos
- * (bare or quoted), returns `<rest>`. Otherwise returns the command unchanged,
- * so the `&&` is then rejected as a shell operator.
+ * or a folder inside one (bare or quoted; relative paths resolve against
+ * `cwd`), returns `<rest>`. Monorepos need this: a stack's commands run from
+ * its folder (`cd <repo>/web && npm test`). Otherwise returns the command
+ * unchanged, so the `&&` is then rejected as a shell operator.
  */
-export function stripCdPrefix(cmd: string, repoPaths: string[]): string {
+export function stripCdPrefix(cmd: string, repoPaths: string[], cwd?: string): string {
   const match = cmd.match(/^cd\s+((?:"[^"]+")|(?:'[^']+')|(?:\S+))\s*&&\s*(.+)$/);
   if (!match) return cmd;
   const rawPath = match[1]!;
   const rest = match[2]!.trim();
   const unquoted = rawPath.replace(/^['"]|['"]$/g, "");
-  const normalized = normalizePath(unquoted);
+  // No shell expansion tricks in the path itself (`~`, `$VAR`, globs).
+  if (/[~$*?`]/.test(unquoted)) return cmd;
+  if (!isAbsolute(unquoted) && !cwd) return cmd;
+  const target = resolve(cwd ?? "", unquoted);
+  if (target.split(/[\\/]/).includes(".git")) return cmd;
   for (const repo of repoPaths) {
-    if (normalizePath(repo) === normalized) return rest;
+    if (isInside(target, repo)) return rest;
   }
   return cmd;
 }
 
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+/** True when `p` is `root` or a path below it (case-insensitive where the file system is). */
+function isInside(p: string, root: string): boolean {
+  const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+  const a = caseInsensitive ? resolve(p).toLowerCase() : resolve(p);
+  const r = caseInsensitive ? resolve(root).toLowerCase() : resolve(root);
+  const rel = relative(r, a);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 /**

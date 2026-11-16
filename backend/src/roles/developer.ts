@@ -37,6 +37,10 @@ export const developer: RoleSpec = {
   ],
   capabilities: ["test", "lint", "build", "inspect"],
   writeScope: "repos-and-run",
+  // Planning produces only the ADR and the plan: repo edits are blocked until the user approves it.
+  writeScopeFor(record) {
+    return record.state === "developer_planning" ? "run" : "repos-and-run";
+  },
   needsWorkspace: true,
   maxTurns: 100,
   cwdFor(record) {
@@ -89,7 +93,9 @@ export const developer: RoleSpec = {
       "## Boundaries",
       "- You MUST NOT push to any remote, and MUST NOT switch branches. The orchestrator manages branches; the PR Creator pushes.",
       bashBoundaryLine(record, "git status/diff/log/show/add/commit/restore/stash/fetch, ls/dir", developer),
-      "- File edits are limited to the target repo(s) and this run's artifact folder.",
+      planning
+        ? "- In this phase you may only write the ADR and the plan (this run's artifact folder). Edits to the target repo(s) are blocked until the user approves the plan."
+        : "- File edits are limited to the target repo(s) and this run's artifact folder.",
       stackSection(record, "developer"),
       aiGuidelineSection(record, "developer"),
       orchestratorSection(ctx),
