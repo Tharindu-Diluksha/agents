@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api } from "../api.js";
-import { ROLE_LABELS, ROLES, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType, type StackId } from "../types.js";
+import { ROLE_LABELS, ROLES, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType, type StackId, type StackProject } from "../types.js";
 
 const emit = defineEmits<{
   (e: "launched", runId: string): void;
@@ -12,25 +12,39 @@ interface RepoRow {
   path: string;
   baseBranch: string;
   aiGuidelinePath: string;
-  /** "" = auto-detect */
-  stack: StackId | "";
-  /** What auto-detection found for the current path (shown as a hint). */
-  detected: StackId[] | null;
+  /** Checked stacks. Pre-filled from detection; empty = let the server detect. */
+  stacks: StackId[];
+  /** What auto-detection found for the current path, with the folder of each stack. */
+  detected: StackProject[] | null;
   detectError: string | null;
 }
 
-const newRow = (): RepoRow => ({ path: "", baseBranch: "master", aiGuidelinePath: "", stack: "", detected: null, detectError: null });
+const newRow = (): RepoRow => ({ path: "", baseBranch: "master", aiGuidelinePath: "", stacks: [], detected: null, detectError: null });
 
+const lastDetected = new WeakMap<RepoRow, string>();
 async function detect(r: RepoRow) {
+  const path = r.path.trim();
+  if (lastDetected.get(r) === path) return; // blur without a change keeps the user's ticks
+  lastDetected.set(r, path);
   r.detected = null;
   r.detectError = null;
-  const path = r.path.trim();
   if (!path) return;
   try {
-    r.detected = (await api.detectStacks(path)).stacks;
+    r.detected = (await api.detectStacks(path)).projects;
+    r.stacks = [...new Set(r.detected.map((p) => p.stack))];
   } catch {
     r.detectError = "path not found";
   }
+}
+
+function toggleStack(r: RepoRow, id: StackId) {
+  r.stacks = r.stacks.includes(id) ? r.stacks.filter((s) => s !== id) : [...r.stacks, id];
+}
+
+/** Folders detection found for a stack in this repo, e.g. "prep-app/"; root shows as "root". */
+function foldersOf(r: RepoRow, id: StackId): string {
+  const dirs = (r.detected ?? []).filter((p) => p.stack === id).map((p) => (p.dir === "." ? "root" : `${p.dir}/`));
+  return dirs.join(", ");
 }
 
 function stackLabel(id: StackId): string {
@@ -48,6 +62,8 @@ const manualDescription = ref("");
 const manualCriteria = ref<string[]>([""]);
 
 const repos = ref<RepoRow[]>([newRow()]);
+/** worktree = isolated copy per run; in-place = a new branch in the user's own checkout. */
+const workspace = ref<"worktree" | "in-place">("worktree");
 const submitting = ref(false);
 const error = ref<string | null>(null);
 
@@ -103,8 +119,8 @@ async function submit() {
         path: r.path.trim(),
         baseBranch: r.baseBranch.trim() || undefined,
         aiGuidelinePath: r.aiGuidelinePath.trim() === "" ? undefined : r.aiGuidelinePath.trim(),
-        // A chosen stack overrides detection; "" lets the server detect it.
-        stacks: r.stack ? [r.stack] : undefined,
+        // Ticked stacks override detection (the server keeps the folders it detects for them); none = detect.
+        stacks: r.stacks.length > 0 ? r.stacks : undefined,
       }))
       .filter((r) => r.path.length > 0);
     if (payloadRepos.length === 0) {
@@ -142,7 +158,7 @@ async function submit() {
         .filter(([, m]) => m.length > 0),
     ) as Partial<Record<RoleId, string>>;
 
-    const { runId } = await api.launchRun({ source, repos: payloadRepos, models: modelOverrides });
+    const { runId } = await api.launchRun({ source, repos: payloadRepos, models: modelOverrides, workspace: workspace.value });
     emit("launched", runId);
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
@@ -254,23 +270,45 @@ async function submit() {
               <input v-model="r.baseBranch" placeholder="master" />
             </div>
             <div>
-              <label>Stack</label>
-              <select v-model="r.stack">
-                <option value="">Auto-detect</option>
-                <option v-for="s in serverConfig?.stacks ?? []" :key="s.id" :value="s.id">{{ s.label }}</option>
-              </select>
-              <div class="muted" style="font-size: 11px; margin-top: 2px">
-                <template v-if="r.detectError">{{ r.detectError }}</template>
-                <template v-else-if="r.detected && r.detected.length">Detected: {{ r.detected.map(stackLabel).join(" + ") }}</template>
-                <template v-else-if="r.detected">Nothing detected — choose a stack</template>
-              </div>
-            </div>
-            <div>
               <label>AI guideline doc path (optional, relative to repo)</label>
               <input v-model="r.aiGuidelinePath" placeholder="docs/ai-guideline (blank = AI_GUIDELINE_PATH_DEFAULT if present)" />
             </div>
           </div>
+          <label>Stacks <span style="font-weight: normal">(tick every one the repo uses — a monorepo can have several)</span></label>
+          <div class="stack-grid">
+            <label v-for="s in serverConfig?.stacks ?? []" :key="s.id" class="stack-opt" :class="{ on: r.stacks.includes(s.id) }" :title="s.summary">
+              <input type="checkbox" :checked="r.stacks.includes(s.id)" @change="toggleStack(r, s.id)" />
+              <span>{{ s.label }}</span>
+              <span v-if="foldersOf(r, s.id)" class="muted mono folder">{{ foldersOf(r, s.id) }}</span>
+            </label>
+          </div>
+          <div class="muted" style="font-size: 11px; margin-top: 2px">
+            <template v-if="r.detectError">{{ r.detectError }}</template>
+            <template v-else-if="r.detected && r.detected.length">
+              Detected: {{ r.detected.map((p) => `${stackLabel(p.stack)} (${p.dir === "." ? "root" : p.dir + "/"})`).join(" + ") }}
+            </template>
+            <template v-else-if="r.detected">Nothing detected — tick the stack(s) this repo uses</template>
+            <template v-else>Enter the path to detect stacks; leave all unticked to detect at launch.</template>
+          </div>
         </div>
+      </div>
+
+      <div class="workspace">
+        <label style="margin:0">Where the agents work</label>
+        <label class="ws-opt">
+          <input type="radio" value="worktree" v-model="workspace" />
+          <span>
+            <strong>Isolated worktree</strong> (recommended)
+            <span class="muted ws-hint">A separate copy of each repo under the orchestrator's <span class="mono">worktrees/</span> folder, with its own dependencies and ports. Your checkout is never touched, and several runs can work on the same repo at once.</span>
+          </span>
+        </label>
+        <label class="ws-opt">
+          <input type="radio" value="in-place" v-model="workspace" />
+          <span>
+            <strong>New branch in my checkout</strong>
+            <span class="muted ws-hint">The agents work directly in the repo path above. After you approve the plan and branch name, the feature branch is created there from the latest base branch. The checkout must be clean and on the base branch, it uses your existing dependencies, and only one such run per repo at a time — don't edit files there while the run is active.</span>
+          </span>
+        </label>
       </div>
 
       <div class="models">
@@ -314,12 +352,21 @@ label { font-size: 12px; color: var(--muted); margin-top: 8px; display: block; }
 .repos { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .repo-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
 .split { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
-.split3 { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 10px; }
+.split3 { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
 @media (max-width: 640px) { .split3 { grid-template-columns: 1fr; } }
+.stack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 8px; margin-top: 4px; }
+.stack-opt { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; color: var(--text); cursor: pointer; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; }
+.stack-opt.on { border-color: var(--accent); }
+.stack-opt input { width: auto; margin: 0; }
+.stack-opt .folder { font-size: 10px; margin-left: auto; }
 .jira-box { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--panel2); }
 .jira-test { margin-top: 6px; font-size: 12px; }
 .jira-test.ok { color: var(--success); }
 .jira-test.bad { color: var(--warn); }
+.workspace { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); display: flex; flex-direction: column; gap: 6px; }
+.ws-opt { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 13px; color: var(--text); cursor: pointer; }
+.ws-opt input { width: auto; margin-top: 3px; }
+.ws-hint { display: block; font-size: 11px; margin-top: 2px; }
 .models { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
 .model-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: center; margin-top: 8px; }
 @media (max-width: 640px) { .split { grid-template-columns: 1fr; } }

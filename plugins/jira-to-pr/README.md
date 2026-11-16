@@ -82,7 +82,7 @@ The orchestrator app **enforces** its rules in code. This plugin **instructs** t
 | Bash allowlist per role, no shell chaining | Enforced (`PreToolUse` hook + `canUseTool`) | Not enforced; roles are told what to run, and Claude Code asks you per your permission settings |
 | File writes limited per role | Enforced | Instruction only; tool lists remove `Edit` from read-only roles |
 | Push / branch / PR only after approval | Only the orchestrator code can | Only the main session is told to; it checks after each step that no subagent pushed or switched branch |
-| Isolation for parallel features | Per-run git worktrees, port blocks, overlap warnings | Works in the current checkout; start the session in a separate worktree to run features in parallel |
+| Isolation for parallel features | Per-run git worktree or a new branch in the checkout (chosen at launch), port blocks, overlap warnings | Asks at the start: an isolated worktree under `.jira-to-pr/<run>/worktree` (with its own dependencies) or a new branch in the current checkout |
 | Fix-loop cap, cost budget, crash recovery | Enforced / automatic | Loop cap by instruction; `state.md` lets you resume a run |
 
 If you need the guarantees, use the app; if you want something light to try in any repo, use the plugin.

@@ -7,6 +7,8 @@ import {
   isToolchainOutput,
   uncommittedPaths,
   checkoutOrCreateBranch,
+  currentBranch,
+  isWorkingTreeClean,
   isWorktreeRoot,
   listWorktrees,
   removeWorktree,
@@ -14,7 +16,7 @@ import {
   switchWorktreeBranch,
 } from "../external/git.js";
 import { repoSlug } from "./artifacts.js";
-import { stacksOf } from "../stacks.js";
+import { projectsOf, type StackId } from "../stacks.js";
 import { allocatePortBlock } from "./ports.js";
 import { listRuns } from "./runStore.js";
 import type { RepoTarget, RunRecord } from "./types.js";
@@ -89,6 +91,11 @@ export async function prepareWorkspaces(record: RunRecord, progress: ProgressFn)
 
     if (existsSync(target) && (await isWorktreeRoot(target))) {
       repo.workPath = target;
+      // Only an install that started and failed is retried; older runs (field absent) are left alone.
+      if (repo.depsInstalled === false) {
+        progress(`retrying the dependency install that failed last time in ${target}`);
+        await installRepoDependencies(repo, target, progress);
+      }
       continue;
     }
 
@@ -114,19 +121,67 @@ export async function prepareWorkspaces(record: RunRecord, progress: ProgressFn)
       progress(`copied ${rel} into the worktree`);
     }
 
-    if (config.worktree.installDeps) {
-      const stacks = stacksOf(repo);
-      progress(`installing dependencies in ${target} (${stacks.join(", ")}) …`);
-      const ran = await installDependencies(target, stacks);
-      progress(ran ? `dependencies installed: ${ran}` : "nothing to install for this stack");
+    await installRepoDependencies(repo, target, progress);
+  }
+}
+
+/**
+ * Installs the worktree's dependencies, one install per project folder (a
+ * monorepo's web/ and api/ each get their own). `depsInstalled` is false
+ * until every install succeeded, so a failed install is retried the next time
+ * the worktree is reused instead of leaving the roles without dependencies.
+ */
+async function installRepoDependencies(repo: RepoTarget, target: string, progress: ProgressFn): Promise<void> {
+  if (!config.worktree.installDeps) return;
+  repo.depsInstalled = false;
+  const byDir = new Map<string, StackId[]>();
+  for (const p of projectsOf(repo)) byDir.set(p.dir, [...(byDir.get(p.dir) ?? []), p.stack]);
+  for (const [dir, stacks] of byDir) {
+    const where = dir === "." ? target : join(target, dir);
+    progress(`installing dependencies in ${where} (${stacks.join(", ")}) …`);
+    const ran = await installDependencies(where, stacks);
+    progress(ran ? `dependencies installed: ${ran}` : "nothing to install for this stack");
+  }
+  repo.depsInstalled = true;
+}
+
+/**
+ * Why a "branch in my checkout" (in-place) run can't start on these repos, or
+ * null. Roles plan against the checkout as it is and the branch gate switches
+ * it, so it must be clean and on the base branch, and no other in-place run
+ * may be using it.
+ */
+export async function inPlaceProblem(repos: Array<{ path: string; baseBranch: string }>): Promise<string | null> {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const active = listRuns().filter((r) => r.workspace === "in-place" && r.state !== "done" && r.state !== "failed");
+  for (const repo of repos) {
+    const other = active.find((r) => r.repos.some((x) => norm(x.path) === norm(repo.path)));
+    if (other) {
+      return `${repo.path} is already used by run ${other.runId}, which works in the same checkout. Finish or archive it, or use an isolated worktree.`;
+    }
+    let clean: boolean;
+    let branch: string;
+    try {
+      clean = await isWorkingTreeClean(repo.path);
+      branch = await currentBranch(repo.path);
+    } catch (err) {
+      return `${repo.path} is not a usable git checkout: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (!clean) return `${repo.path} has uncommitted changes. Commit or stash them first, or use an isolated worktree.`;
+    if (branch !== repo.baseBranch) {
+      return `${repo.path} is on branch ${branch}, not ${repo.baseBranch}. Switch to ${repo.baseBranch} first, or use an isolated worktree.`;
     }
   }
+  return null;
 }
 
 /** Puts the run's workspace for `repo` on `branch` (worktree, or the checkout for in-place runs). */
 export async function setFeatureBranch(record: RunRecord, repo: RepoTarget, branch: string): Promise<string> {
   if (!usesWorktrees(record)) {
-    const outcome = await checkoutOrCreateBranch(repo.path, branch, repo.baseBranch);
+    // Branch mode: a new branch in the user's checkout, off the latest base (origin/<base> when it exists).
+    const base = await resolveBaseRef(repo.path, repo.baseBranch, config.worktree.fetchBase);
+    const outcome = await checkoutOrCreateBranch(repo.path, branch, base.ref);
+    repo.baseRef = base.ref;
     repo.branch = branch;
     return outcome;
   }

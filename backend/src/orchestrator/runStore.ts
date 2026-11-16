@@ -25,6 +25,8 @@ export function createRun(input: {
   source: RunSource;
   repos: RepoTarget[];
   models?: Partial<Record<RoleId, string>>;
+  /** Defaults to an isolated worktree per repo. */
+  workspace?: "worktree" | "in-place";
 }): RunRecord {
   if (input.repos.length === 0) throw new Error("createRun requires at least one repo");
   const now = new Date().toISOString();
@@ -41,7 +43,7 @@ export function createRun(input: {
     pendingApproval: null,
     models: input.models,
     fixIterations: 0,
-    workspace: "worktree",
+    workspace: input.workspace ?? "worktree",
   };
   mkdirSync(runDir(input.runId), { recursive: true });
   cache.set(record.runId, record);

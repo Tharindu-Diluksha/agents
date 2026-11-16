@@ -1,4 +1,4 @@
-import type { StackId } from "../stacks.js";
+import type { StackId, StackProject } from "../stacks.js";
 export const ROLES = [
   "analyst",
   "developer",
@@ -82,6 +82,8 @@ export interface RoleAttempt {
   costUsd?: number;
   numTurns?: number;
   usage?: AttemptUsage;
+  /** Answers / feedback the user sent from an approval card to start this attempt. */
+  feedback?: string;
 }
 
 export interface AttemptUsage {
@@ -110,6 +112,13 @@ export interface RepoTarget {
   baseRef?: string | null;
   /** Tech stacks of this repo, primary first (detected at launch or chosen). Absent = TypeScript (older runs). */
   stacks?: StackId[];
+  /**
+   * Where each stack lives in the repo (root "." or a top-level folder of a
+   * monorepo). Absent = every stack at the root (runs before monorepo support).
+   */
+  projects?: StackProject[];
+  /** False while (or after a failed) dependency install into the worktree; retried on next use. */
+  depsInstalled?: boolean;
 }
 
 export type SourceType = "feature" | "change" | "fix";
@@ -152,7 +161,10 @@ export interface RunRecord {
   fixIterations?: number;
   /**
    * `worktree`: each repo gets an isolated git worktree for this run (default).
-   * `in-place`: roles work in the user's checkout (runs created before worktrees).
+   * `in-place`: "branch" mode, chosen at launch (and every run created before
+   *   worktrees): roles work in the user's checkout, and the branch gate
+   *   creates the feature branch there off the latest base. One such run per
+   *   repo at a time; no per-run dependency install or port block.
    */
   workspace?: "worktree" | "in-place";
   /** Ports reserved for this run's dev/test servers while its worktrees exist. */

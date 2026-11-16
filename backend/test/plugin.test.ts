@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
  */
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const plugin = join(root, "plugins", "jira-to-pr");
-const read = (p: string) => readFileSync(p, "utf8");
+// LF regardless of how git checked the files out (CRLF on Windows with core.autocrlf).
+const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
 
 function frontmatter(text: string): Record<string, string> {
   const m = text.match(/^---\n([\s\S]*?)\n---\n/);

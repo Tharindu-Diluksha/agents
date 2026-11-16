@@ -127,7 +127,13 @@ function roleChip(role: RoleId): { label: string; cls: string } {
   if (!last) return { label: "idle", cls: "idle" };
   if (last.status === "running") return { label: "running", cls: "running" };
   if (last.status === "queued") return { label: "queued", cls: "awaiting" };
-  if (last.status === "awaiting_approval") return { label: "awaiting approval", cls: "awaiting" };
+  // The attempt keeps "awaiting_approval" as its outcome (analytics counts it); the gate itself
+  // may have been resolved since — then the role is finished.
+  if (last.status === "awaiting_approval") {
+    return detail.value?.pendingApproval?.role === role
+      ? { label: "awaiting approval", cls: "awaiting" }
+      : { label: "done", cls: "done" };
+  }
   if (last.status === "done") return { label: "done", cls: "done" };
   if (last.status === "failed") return { label: "failed", cls: "failed" };
   if (last.status === "blocked") return { label: "blocked", cls: "warn" };
@@ -161,6 +167,22 @@ const runCost = computed(() => {
   let c = detail.value?.totalCostUsd ?? 0;
   for (const r of ROLES) if (isRunning(r)) c += liveUsage.value[r]?.costUsd ?? 0;
   return c;
+});
+
+/**
+ * What the user sent from an approval card, shown read-only while the role
+ * works on it (until that attempt ends and the next gate, if any, opens).
+ */
+const sentFeedback = computed<{ role: RoleId; attempt: number; text: string; status: string } | null>(() => {
+  if (!detail.value || detail.value.pendingApproval) return null;
+  for (const r of ROLES) {
+    const attempts = detail.value.roles?.[r] ?? [];
+    const last = attempts[attempts.length - 1];
+    if (last?.feedback && (last.status === "running" || last.status === "queued")) {
+      return { role: r, attempt: attempts.length, text: last.feedback, status: last.status };
+    }
+  }
+  return null;
 });
 
 /** Unit Tester runs twice per cycle; show which phase its latest attempt was. */
@@ -275,10 +297,10 @@ async function removeWorktrees() {
       </div>
       <div class="muted mono" style="margin-top: 4px">
         <div v-for="repo in detail.repos" :key="repo.path">
-          {{ repo.path }} (<span v-if="repo.stacks?.length">{{ repo.stacks.join(" + ") }}, </span>base: {{ repo.baseBranch }}<span v-if="repo.branch">, branch: {{ repo.branch }}</span><span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
+          {{ repo.path }} (<span v-if="repo.projects?.some((p) => p.dir !== '.')">{{ repo.projects.map((p) => `${p.stack} in ${p.dir === "." ? "root" : p.dir + "/"}`).join(" + ") }}, </span><span v-else-if="repo.stacks?.length">{{ repo.stacks.join(" + ") }}, </span>base: {{ repo.baseBranch }}<span v-if="repo.branch">, branch: {{ repo.branch }}</span><span v-if="repo.aiGuidelinePath">, ai-guideline: {{ repo.aiGuidelinePath }}</span>)
           <div v-if="repo.workPath" style="font-size: 11px">↳ worktree: {{ repo.workPath }}</div>
         </div>
-        <div v-if="detail.workspace === 'in-place'" style="font-size: 11px">This run predates per-run worktrees and works in the checkout directly.</div>
+        <div v-if="detail.workspace === 'in-place'" style="font-size: 11px">Branch mode: the agents work directly in your checkout; the feature branch is created there after the branch gate.</div>
       </div>
       <div v-if="detail.state === 'failed' && detail.failureReason" class="error" style="margin-top: 8px; white-space: pre-wrap">Failure: {{ detail.failureReason }}</div>
       <div v-if="detail.ports" class="muted mono" style="font-size: 11px; margin-top: 2px">
@@ -345,6 +367,19 @@ async function removeWorktrees() {
       @resolved="refresh"
     />
 
+    <div v-else-if="sentFeedback" class="panel sent-feedback">
+      <div class="row">
+        <strong>{{ sentFeedback.role === "analyst" ? "Your answers" : "Your feedback" }}</strong>
+        <span class="chip" :class="sentFeedback.status === 'running' ? 'running' : 'awaiting'">
+          {{ ROLE_LABELS[sentFeedback.role] }} {{ sentFeedback.status === "running" ? "is revising" : "queued" }} · attempt {{ sentFeedback.attempt }}
+        </span>
+      </div>
+      <textarea :value="sentFeedback.text" disabled></textarea>
+      <p class="muted" style="font-size: 12px; margin: 4px 0 0">
+        Read-only while the {{ ROLE_LABELS[sentFeedback.role] }} works on it. To change it, wait for the next approval card, or Abort and jump back.
+      </p>
+    </div>
+
     <div class="main">
       <section class="panel stream-panel">
         <p v-if="historyNote" class="muted" style="font-size: 11px; margin: 0 0 4px">{{ historyNote }}</p>
@@ -352,7 +387,7 @@ async function removeWorktrees() {
           {{ ROLE_LABELS[activeRole] }} — stream
           <span class="muted mono" style="font-size: 11px; font-weight: normal">model: {{ detail.effectiveModels[activeRole] }}</span>
         </h3>
-        <RoleStream :role="activeRole" :events="events" />
+        <RoleStream :role="activeRole" :events="events" :attempts="detail.roles?.[activeRole] ?? []" />
       </section>
 
       <section class="panel art-panel">
@@ -396,9 +431,14 @@ async function removeWorktrees() {
 .roles { display: flex; gap: 6px; flex-wrap: wrap; }
 .role-tab { display: flex; align-items: center; gap: 8px; }
 .role-tab.active { background: var(--panel2); border-color: var(--accent); }
-.main { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
-@media (max-width: 1100px) { .main { grid-template-columns: 1fr; } }
+/* minmax(0, …): a plain `fr` track never shrinks below its content, so one long
+   unwrapped line in the stream would push the artifacts panel off-screen. */
+.main { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.main > .panel { min-width: 0; }
+@media (max-width: 1100px) { .main { grid-template-columns: minmax(0, 1fr); } }
 .stream-panel h3, .art-panel h3 { margin: 0 0 8px; }
+.sent-feedback { border-color: var(--accent); }
+.sent-feedback textarea { margin-top: 8px; width: 100%; min-height: 120px; resize: vertical; opacity: 0.85; cursor: not-allowed; }
 .error { color: var(--danger); }
 .manual-source { background: var(--panel2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
 .manual-source p { margin: 4px 0; }

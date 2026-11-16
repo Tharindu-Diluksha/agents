@@ -1,19 +1,30 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /*
  * Stack profiles: what a role may run and how it should test, per tech stack.
  *
  * A repo has one or more stacks (detected from its files at launch, or chosen
- * in the launch dialog). A role's Bash allowlist is its stack-independent git
+ * in the launch dialog), each living in a folder of the repo (`StackProject`):
+ * the root, or one level down for monorepos. A role's Bash allowlist is its stack-independent git
  * patterns plus, for every stack of every repo in the run, that stack's
  * patterns for the capabilities the role has (see roles/*.ts `capabilities`).
  * The same profiles drive dependency installation in new worktrees and the
  * "Stack" section injected into role prompts.
  */
 
-export const STACK_IDS = ["typescript", "node", "vue", "react", "dotnet", "python", "go"] as const;
+export const STACK_IDS = ["typescript", "node", "vue", "react", "angular", "dotnet", "python", "go"] as const;
 export type StackId = (typeof STACK_IDS)[number];
+
+/**
+ * Where a stack lives inside a repo: `dir` is relative to the repo root, "."
+ * for the root itself. A monorepo has several, e.g. `prep-app` (angular) and
+ * `prep-api` (dotnet). Roles run that stack's commands from that folder.
+ */
+export interface StackProject {
+  dir: string;
+  stack: StackId;
+}
 
 /** What a role is allowed to do with the toolchain. */
 export type Capability =
@@ -85,6 +96,13 @@ const NODE_BASH: Partial<Record<Capability, RegExp[]>> = {
     /^cat\s+(package\.json|tsconfig[\w.-]*\.json|(playwright|vite|vitest|jest)\.config\.(ts|js|mjs|cjs))$/,
   ],
 };
+
+/** A copy of `base` with `extra` patterns appended per capability. */
+function withExtra(base: Partial<Record<Capability, RegExp[]>>, extra: Partial<Record<Capability, RegExp[]>>): Partial<Record<Capability, RegExp[]>> {
+  const out: Partial<Record<Capability, RegExp[]>> = { ...base };
+  for (const [cap, res] of Object.entries(extra) as Array<[Capability, RegExp[]]>) out[cap] = [...(base[cap] ?? []), ...res];
+  return out;
+}
 
 const nodeExamples = (extraTest: string[] = []): StackProfile["examples"] => ({
   test: ["npm test", "npx vitest run <file>", ...extraTest],
@@ -165,6 +183,35 @@ export const STACKS: Record<StackId, StackProfile> = {
       e2eSuite: NODE_E2E_SUITE,
       review: "Run lint (incl. `react-hooks` rules) and typecheck. Watch for `dangerouslySetInnerHTML` with untrusted data, stale closures in effects, missing effect cleanup, unstable `key`s.",
       ports: "Vite: `--port $PORT --strictPort`; CRA/Next read `PORT`. Point Playwright's `webServer`/`baseURL` at `E2E_PORT`/`E2E_BASE_URL`.",
+    },
+  },
+  angular: {
+    id: "angular",
+    label: "Angular",
+    bash: withExtra(NODE_BASH, {
+      // `ng test` watches by default and would never return: require --watch=false / --no-watch.
+      test: [/^(npx\s+)?ng\s+test\s+(\S+\s+)*--(watch=false|no-watch)(\s|$)/, /^(npx\s+)?ng\s+(build|version)(\s|$)/],
+      lint: [/^(npx\s+)?ng\s+lint(\s|$)/],
+      build: [/^(npx\s+)?ng\s+build(\s|$)/],
+      e2e: [/^(npx\s+)?ng\s+e2e(\s|$)/],
+      inspect: [/^cat\s+angular\.json$/, /^cat\s+karma\.conf\.(js|cjs|ts)$/],
+    }),
+    examples: {
+      test: ["npx ng test --watch=false --browsers=ChromeHeadless", "npm test -- --watch=false --browsers=ChromeHeadless", "npx tsc --noEmit -p tsconfig.app.json"],
+      lint: ["npx ng lint", "npx tsc --noEmit -p tsconfig.app.json"],
+      build: ["npx ng build"],
+      audit: ["npm audit"],
+      e2e: ["npx playwright test"],
+      install: ["npm install -D @playwright/test", "npx playwright install"],
+    },
+    guidance: {
+      summary: "The workspace's `ng test` runner (Karma + Jasmine by default; Jest or Vitest if `angular.json` says so), always with `--watch=false`; `ng build` for compile errors; Playwright for E2E.",
+      unit: "`*.spec.ts` next to the code, using `TestBed` with the standalone component/service under test in `imports`/`providers`; `HttpTestingController` (`provideHttpClientTesting()`) for HTTP, `RouterTestingHarness` or `provideRouter([])` for routing. Query the DOM via `fixture.nativeElement`/`By.css` and assert what the user sees. Run with `ng test --watch=false` (add `--browsers=ChromeHeadless` for Karma) — without it the runner never exits.",
+      integration: "Test feature routes with the real router and guards (`RouterTestingHarness`), real services and `HttpTestingController` stubbing only the network. If the backend is in the same run (another folder or repo), test its API there.",
+      e2e: NODE_E2E,
+      e2eSuite: NODE_E2E_SUITE + ", or an `e2e` target in `angular.json`",
+      review: "Run `ng build` (new template/type errors are findings) and `ng lint` if configured; `npm audit`. Watch for `bypassSecurityTrust*`/`[innerHTML]` with untrusted data, subscriptions without `takeUntilDestroyed`/`async` pipe, route guards that only hide UI (the API must enforce access too), lazy routes that don't split admin-only code.",
+      ports: "Start the dev server with `npx ng serve --port $PORT`. Point Playwright's `webServer`/`baseURL` at `E2E_PORT`/`E2E_BASE_URL`.",
     },
   },
   dotnet: {
@@ -290,11 +337,11 @@ function listSafe(dir: string): string[] {
   }
 }
 
-/**
- * Stacks of the repo at `dir`, primary first. Looks at the repo root (and one
- * level down for .NET projects). Returns [] when nothing is recognised.
- */
-export function detectStacks(dir: string): StackId[] {
+/** Folders never searched for projects (dependencies, build output, tooling). */
+const SKIP_DIRS = new Set(["node_modules", "bin", "obj", "dist", "build", "out", "target", "vendor", "coverage", "venv", "__pycache__"]);
+
+/** Stacks whose marker files sit directly in `dir` (plus .NET projects under src/, tests/, test/). */
+function stacksIn(dir: string): StackId[] {
   const out: StackId[] = [];
   const has = (f: string) => existsSync(join(dir, f));
   const root = listSafe(dir);
@@ -302,7 +349,8 @@ export function detectStacks(dir: string): StackId[] {
   const pkg = has("package.json") ? readJson(join(dir, "package.json")) : null;
   if (pkg) {
     const deps = { ...((pkg.dependencies as object) ?? {}), ...((pkg.devDependencies as object) ?? {}) } as Record<string, unknown>;
-    if ("vue" in deps || "nuxt" in deps) out.push("vue");
+    if ("@angular/core" in deps || has("angular.json")) out.push("angular");
+    else if ("vue" in deps || "nuxt" in deps) out.push("vue");
     else if ("react" in deps || "next" in deps) out.push("react");
     else if ("typescript" in deps || has("tsconfig.json")) out.push("typescript");
     else out.push("node");
@@ -318,9 +366,58 @@ export function detectStacks(dir: string): StackId[] {
   }
 
   if (has("go.mod")) out.push("go");
-
-  // Put the backend-ish stack first when a repo mixes, e.g., Go + a small package.json for tooling.
   return out;
+}
+
+/**
+ * Projects of the repo at `dir`: stacks at the root, then stacks in each
+ * top-level folder (monorepos such as `web/` + `api/`). A stack already found
+ * at the root isn't repeated for sub-folders (a root .sln already covers its
+ * projects; a root package.json usually drives its workspaces).
+ */
+export function detectProjects(dir: string): StackProject[] {
+  const out: StackProject[] = stacksIn(dir).map((stack) => ({ dir: ".", stack }));
+  const atRoot = new Set(out.map((p) => p.stack));
+  const subdirs = listSafe(dir)
+    .filter((d) => !d.startsWith(".") && !SKIP_DIRS.has(d.toLowerCase()))
+    .filter((d) => {
+      try {
+        return statSync(join(dir, d)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+  for (const sub of subdirs) {
+    for (const stack of stacksIn(join(dir, sub))) {
+      if (!atRoot.has(stack)) out.push({ dir: sub, stack });
+    }
+  }
+  return out;
+}
+
+/** Stacks of the repo at `dir` (root and top-level folders), in detection order. [] when nothing is recognised. */
+export function detectStacks(dir: string): StackId[] {
+  return [...new Set(detectProjects(dir).map((p) => p.stack))];
+}
+
+/**
+ * Projects for a repo given the stacks the user chose: the detected folders of
+ * each chosen stack, and the repo root for a chosen stack nothing was detected for.
+ */
+export function projectsFor(chosen: StackId[], detected: StackProject[]): StackProject[] {
+  const out: StackProject[] = [];
+  for (const stack of new Set(chosen)) {
+    const found = detected.filter((p) => p.stack === stack);
+    out.push(...(found.length > 0 ? found : [{ dir: ".", stack }]));
+  }
+  return out;
+}
+
+/** The repo's projects; runs created before monorepo support have every stack at the root. */
+export function projectsOf(repo: { stacks?: StackId[] | null; projects?: StackProject[] | null }): StackProject[] {
+  if (repo.projects && repo.projects.length > 0) return repo.projects;
+  return stacksOf(repo).map((stack) => ({ dir: ".", stack }));
 }
 
 /** The repo's stacks, falling back to TypeScript for runs created before stack profiles. */
@@ -351,7 +448,8 @@ export function stackBashPatterns(stacks: Iterable<StackId>, capabilities: Itera
 
 /** Human-readable detection rules (mirrors detectStacks), for docs and the plugin's stack guide. */
 export const DETECTION_RULES: string[] = [
-  "`package.json` depending on `vue`/`nuxt` → **vue**; on `react`/`next` → **react**; on `typescript` or with a `tsconfig.json` → **typescript**; otherwise → **node**",
+  "Check the repo root and each top-level folder (skipping dot-folders, `node_modules`, `bin`, `obj`, `dist` and other output folders); a monorepo such as `web/` + `api/` has one stack per folder, and commands for that stack run from its folder",
+  "`package.json` depending on `@angular/core` (or an `angular.json`) → **angular**; on `vue`/`nuxt` → **vue**; on `react`/`next` → **react**; on `typescript` or with a `tsconfig.json` → **typescript**; otherwise → **node**",
   "a `.sln`/`.slnx`/`.csproj`/`.fsproj` at the root or one level under `src/`, `tests/` or `test/` → **dotnet**",
   "`pyproject.toml`, `requirements*.txt`, `setup.py`/`setup.cfg` or `Pipfile` → **python**",
   "`go.mod` → **go**",

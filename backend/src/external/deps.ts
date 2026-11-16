@@ -23,7 +23,7 @@ export function installSteps(dir: string, stacks: StackId[]): InstallStep[] {
   const steps: InstallStep[] = [];
   const set = new Set(stacks);
 
-  if (["typescript", "node", "vue", "react"].some((s) => set.has(s as StackId)) && has("package.json")) {
+  if (["typescript", "node", "vue", "react", "angular"].some((s) => set.has(s as StackId)) && has("package.json")) {
     if (has("pnpm-lock.yaml")) steps.push({ cmd: "pnpm", args: ["install", "--frozen-lockfile"] });
     else if (has("yarn.lock")) steps.push({ cmd: "yarn", args: ["install", "--frozen-lockfile"] });
     else if (has("package-lock.json")) steps.push({ cmd: "npm", args: ["ci"] });
@@ -51,11 +51,26 @@ export function installSteps(dir: string, stacks: StackId[]): InstallStep[] {
   return steps;
 }
 
+/** Tools that are `.cmd` shims on Windows (npm, npx, pnpm, yarn). */
+const CMD_SHIMS = new Set(["npm", "npx", "pnpm", "yarn"]);
+
+/**
+ * How to start a step. On Windows the Node package managers are `.cmd`
+ * scripts, which Node can't spawn without a shell (`spawn npm ENOENT`, or
+ * EINVAL for `npm.cmd`), so they go through `cmd.exe`. The arguments are the
+ * fixed ones from `installSteps`, never user input.
+ */
+export function spawnable(step: InstallStep, platform: NodeJS.Platform = process.platform): InstallStep {
+  if (platform !== "win32" || !CMD_SHIMS.has(step.cmd)) return step;
+  return { cmd: "cmd.exe", args: ["/d", "/s", "/c", step.cmd, ...step.args] };
+}
+
 export async function installDependencies(dir: string, stacks: StackId[], timeoutMs = 15 * 60_000): Promise<string> {
   const ran: string[] = [];
   for (const step of installSteps(dir, stacks)) {
     const label = `${step.cmd.startsWith(dir) ? step.cmd.slice(dir.length + 1) : step.cmd} ${step.args.join(" ")}`;
-    const r = await runCmd(step.cmd, step.args, dir, { timeoutMs });
+    const run = spawnable(step);
+    const r = await runCmd(run.cmd, run.args, dir, { timeoutMs });
     if (r.code !== 0) {
       const tail = (r.stderr.trim() || r.stdout.trim()).split("\n").slice(-15).join("\n");
       const hint = r.code === -1 && /ENOENT/.test(r.stderr) ? ` (is \`${step.cmd}\` installed and on PATH?)` : "";

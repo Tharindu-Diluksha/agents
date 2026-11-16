@@ -29,10 +29,18 @@ const TEMPLATES_DIR = join(ROOT, "templates");
 
 const BLOCK = /<!-- shared:([a-z0-9-]+) -->[\s\S]*?<!-- \/shared:\1 -->/g;
 
+/**
+ * Text with LF line endings. Windows checkouts (core.autocrlf) have CRLF files;
+ * everything is read, generated and compared as LF so the output never mixes
+ * endings and the drift check doesn't depend on how git checked files out.
+ */
+export const lf = (text: string): string => text.replace(/\r\n/g, "\n");
+const readText = (file: string): string => lf(readFileSync(file, "utf8"));
+
 export function loadFragments(): Map<string, string> {
   const out = new Map<string, string>();
   for (const f of readdirSync(SHARED_DIR).filter((f) => f.endsWith(".md"))) {
-    out.set(f.replace(/\.md$/, ""), readFileSync(join(SHARED_DIR, f), "utf8").trim());
+    out.set(f.replace(/\.md$/, ""), readText(join(SHARED_DIR, f)).trim());
   }
   return out;
 }
@@ -111,7 +119,7 @@ export function plan(): Planned[] {
   const fragments = loadFragments();
   const out: Planned[] = [];
   for (const file of promptTargets()) {
-    const text = readFileSync(file, "utf8");
+    const text = readText(file);
     out.push({ path: file, content: fillBlocks(text, fragments, relative(ROOT, file)) });
   }
   for (const f of readdirSync(TEMPLATES_DIR).filter((f) => f.endsWith(".md"))) {
@@ -122,9 +130,16 @@ export function plan(): Planned[] {
 }
 
 /** Paths whose on-disk content differs from what the sync would write. */
+/** True when the file on disk already has `content`, ignoring CRLF vs LF. */
+function upToDate(p: Planned): boolean {
+  if (!existsSync(p.path)) return false;
+  const want = typeof p.content === "string" ? p.content : p.content.toString("utf8");
+  return readText(p.path) === lf(want);
+}
+
 export function drifted(): string[] {
   return plan()
-    .filter((p) => !existsSync(p.path) || !Buffer.from(readFileSync(p.path)).equals(Buffer.from(p.content)))
+    .filter((p) => !upToDate(p))
     .map((p) => relative(ROOT, p.path));
 }
 
@@ -139,8 +154,7 @@ function main(): void {
     return;
   }
   for (const p of plan()) {
-    const before = existsSync(p.path) ? readFileSync(p.path) : null;
-    if (before && Buffer.from(before).equals(Buffer.from(p.content))) continue;
+    if (upToDate(p)) continue;
     if (typeof p.content === "string") writeFileSync(p.path, p.content);
     else copyFileSync(join(TEMPLATES_DIR, p.path.split(/[\\/]/).pop()!), p.path);
     console.log(`updated ${relative(ROOT, p.path)}`);

@@ -659,6 +659,8 @@ async function runRoleAsync(
   const attempt = startAttempt(record, role);
   attempt.model = model;
   attempt.status = "queued";
+  // Kept so the UI can show what the user sent while this attempt works on it.
+  if (ctx.feedback?.trim()) attempt.feedback = ctx.feedback.trim();
   const attemptNumber = record.roles[role]?.length ?? 1;
   saveRun(record);
 
@@ -690,7 +692,7 @@ async function runRoleAsync(
       cwd: spec.cwdFor(record),
       model,
       repoPaths: record.repos.map(workDir),
-      writeRoots: writeRootsFor(record, spec.writeScope),
+      writeRoots: writeRootsFor(record, spec.writeScopeFor?.(record) ?? spec.writeScope),
       bashAllowList: bashAllowListFor(spec, record),
       extraTools: jira.tools,
       mcpServers: jira.mcpServers,

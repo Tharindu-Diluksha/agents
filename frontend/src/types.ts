@@ -61,13 +61,21 @@ export interface ProposedBranches {
   perRepo: Array<{ repoPath: string; baseBranch: string; currentBranch: string | null; suggestedBranch: string; note?: string }>;
 }
 
-export const STACK_IDS = ["typescript", "node", "vue", "react", "dotnet", "python", "go"] as const;
+export const STACK_IDS = ["typescript", "node", "vue", "react", "angular", "dotnet", "python", "go"] as const;
 export type StackId = (typeof STACK_IDS)[number];
+
+/** Where a stack lives in a repo: "." = the root, otherwise a top-level folder (monorepos). */
+export interface StackProject {
+  dir: string;
+  stack: StackId;
+}
 
 export interface RepoTarget {
   path: string;
   /** Tech stacks, primary first. Absent on runs created before stack profiles (treated as TypeScript). */
   stacks?: StackId[];
+  /** Folder of each stack. Absent = every stack at the root. */
+  projects?: StackProject[];
   baseBranch: string;
   aiGuidelinePath: string | null;
   /** This run's git worktree for the repo, once created. */
@@ -130,6 +138,8 @@ export interface RoleAttempt {
   costUsd?: number;
   numTurns?: number;
   usage?: AttemptUsage;
+  /** Answers / feedback the user sent from an approval card to start this attempt. */
+  feedback?: string;
 }
 
 export interface RunDetail extends RunSummary {

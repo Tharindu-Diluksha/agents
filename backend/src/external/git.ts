@@ -37,8 +37,13 @@ export async function pushBranch(repoPath: string, branch: string): Promise<void
   if (r.code !== 0) throw new Error(`git push failed: ${r.stderr.trim()}`);
 }
 
+/**
+ * No uncommitted changes to tracked files. Untracked files (a local `.env`,
+ * scratch files) don't count: git carries them across a branch switch, and
+ * refuses the switch itself if one would be overwritten.
+ */
 export async function isWorkingTreeClean(repoPath: string): Promise<boolean> {
-  const r = await runCmd("git", ["status", "--porcelain"], repoPath);
+  const r = await runCmd("git", ["status", "--porcelain", "--untracked-files=no"], repoPath);
   if (r.code !== 0) throw new Error(`git status failed: ${r.stderr.trim()}`);
   return r.stdout.trim() === "";
 }

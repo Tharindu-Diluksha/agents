@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { api } from "../api.js";
 import type { PendingApproval, ProposedBranches } from "../types.js";
+import { countOpenQuestions } from "../openQuestions.js";
 
 const props = defineProps<{ runId: string; pending: PendingApproval }>();
 const emit = defineEmits<{ (e: "resolved"): void }>();
@@ -15,6 +16,35 @@ const busy = ref(false);
 const err = ref<string | null>(null);
 
 const isBranchApproval = computed(() => props.pending.action === "approve_branch_names");
+/** The Analyst's feature-doc gate: the place to answer its open questions. */
+const isFeatureDocGate = computed(() => props.pending.action === "proceed_to_next" && props.pending.role === "analyst");
+/** Gates whose reject re-runs the role with the typed text. Elsewhere the text would never be delivered. */
+const feedbackReachesRole = computed(() => props.pending.action === "proceed_to_next" || props.pending.action === "create_pr");
+/** Approving never carries the text, so don't let it be dropped silently. */
+const hasFeedback = computed(() => feedback.value.trim().length > 0);
+const openQuestions = ref(0);
+/** Why Approve is disabled, or null when it isn't. */
+const approveBlockedReason = computed<string | null>(() => {
+  if (feedbackReachesRole.value && hasFeedback.value) {
+    return `Approve is disabled while this box has text — approving would discard it. Send it with “${rejectLabel()}”, or clear the box to approve.`;
+  }
+  if (isFeatureDocGate.value && openQuestions.value > 0) {
+    return `Approve is disabled while the feature doc has ${openQuestions.value} open question${openQuestions.value === 1 ? "" : "s"}. Answer them above and click “Send answers + revise”.`;
+  }
+  return null;
+});
+const approveBlocked = computed(() => approveBlockedReason.value !== null);
+
+async function loadOpenQuestions() {
+  openQuestions.value = 0;
+  if (!isFeatureDocGate.value) return;
+  try {
+    openQuestions.value = countOpenQuestions(await api.getArtifact(props.runId, "analyst/feature-doc.md"));
+  } catch {
+    // No feature doc yet — show no count.
+  }
+}
+watch(() => props.pending.requestedAt, loadOpenQuestions, { immediate: true });
 
 async function loadActive() {
   const rel = activePayload.value;
@@ -61,6 +91,7 @@ function approveLabel() {
 function rejectLabel() {
   if (isBranchApproval.value) return "Cancel run";
   if (props.pending.action === "create_test_suite") return "Decline + skip E2E";
+  if (isFeatureDocGate.value && hasFeedback.value) return "Send answers + revise";
   return "Reject + re-run";
 }
 
@@ -95,6 +126,9 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
     <div class="row">
       <strong>Awaiting approval</strong>
       <span class="chip awaiting">{{ pending.action }}</span>
+      <span v-if="openQuestions > 0" class="chip awaiting" title="Items under ## Open questions in feature-doc.md">
+        {{ openQuestions }} open question{{ openQuestions === 1 ? "" : "s" }}
+      </span>
       <div class="spacer" />
       <span class="muted">{{ new Date(pending.requestedAt).toLocaleTimeString() }}</span>
     </div>
@@ -144,17 +178,38 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
       </p>
     </div>
 
-    <label class="muted" style="margin-top: 8px; display:block">Feedback (sent to the role on reject)</label>
-    <textarea v-model="feedback" placeholder="Optional feedback for a re-run..."></textarea>
+    <template v-if="feedbackReachesRole">
+      <template v-if="isFeatureDocGate">
+        <label class="muted" style="margin-top: 8px; display:block">Answers / feedback for the Analyst</label>
+        <textarea
+          v-model="feedback"
+          :disabled="busy"
+          :placeholder="openQuestions > 0
+            ? 'Answer the open questions (e.g. 1. … 2. …) or describe what to change. The Analyst revises feature-doc.md and asks again.'
+            : 'Describe what to change. The Analyst revises feature-doc.md and asks again.'"
+        ></textarea>
+      </template>
+      <template v-else>
+        <label class="muted" style="margin-top: 8px; display:block">Feedback for the {{ pending.role }} (sent with {{ rejectLabel() }})</label>
+        <textarea v-model="feedback" :disabled="busy" placeholder="Optional feedback for a re-run..."></textarea>
+      </template>
+      <p v-if="approveBlockedReason" class="muted hint">{{ approveBlockedReason }}</p>
+    </template>
 
     <p v-if="err" class="error">{{ err }}</p>
 
     <div class="row" style="margin-top: 12px">
       <button class="danger" @click="act('reject')" :disabled="busy">{{ rejectLabel() }}</button>
-      <button v-if="!isBranchApproval" @click="act('skip')" :disabled="busy">Skip</button>
+      <!-- On re-run gates the backend treats skip as reject, so Skip would just re-run the role. -->
+      <button v-if="!isBranchApproval && !feedbackReachesRole" @click="act('skip')" :disabled="busy">Skip</button>
       <div class="spacer" />
-      <button v-if="canEditMarkdown() && edited !== null" @click="act('edit')" :disabled="busy">Approve edited</button>
-      <button class="primary" @click="act('approve')" :disabled="busy">{{ approveLabel() }}</button>
+      <button v-if="canEditMarkdown() && edited !== null" @click="act('edit')" :disabled="busy || approveBlocked">Approve edited</button>
+      <button
+        class="primary"
+        @click="act('approve')"
+        :disabled="busy || approveBlocked"
+        :title="approveBlockedReason ?? ''"
+      >{{ approveLabel() }}</button>
     </div>
   </div>
 </template>
@@ -163,6 +218,7 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
 .approval { border-color: var(--warn); }
 .error { color: var(--danger); }
 textarea { margin-top: 4px; }
+.hint { font-size: 12px; margin: 4px 0 0; color: var(--warn); }
 .preview-pre { max-height: 40vh; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--panel2); padding: 10px; border-radius: 4px; }
 .branch-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-top: 8px; background: var(--panel2); }
 .branch-row label { font-size: 12px; color: var(--muted); margin-top: 6px; display: block; }

@@ -10,7 +10,7 @@ import { log } from "../log.js";
 import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
-import { detectStacks, STACK_IDS, STACKS } from "../stacks.js";
+import { detectProjects, projectsFor, STACK_IDS, STACKS } from "../stacks.js";
 import { createRun, listArchivedRuns, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
 import { ATTEMPT_COLUMNS, attemptRows, computeAnalytics, runRows, toCsv } from "../orchestrator/analytics.js";
 import { ROLES, type RoleId } from "../orchestrator/types.js";
@@ -24,6 +24,7 @@ import {
   skipCurrent,
   startRun,
 } from "../orchestrator/workflow.js";
+import { inPlaceProblem } from "../orchestrator/workspaces.js";
 
 const RepoBody = z.object({
   path: z.string().min(1),
@@ -56,6 +57,8 @@ const LaunchBody = z.object({
   repos: z.array(RepoBody).min(1),
   /** Per-role model overrides for this run; blank/missing roles use the server defaults. */
   models: ModelsBody,
+  /** `worktree` (default): isolated worktree per repo. `in-place`: a new branch in the user's checkout. */
+  workspace: z.enum(["worktree", "in-place"]).optional(),
 });
 
 const ApproveBody = z.object({
@@ -109,7 +112,8 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       reply.code(400).send({ error: "repo_not_found" });
       return;
     }
-    return { stacks: detectStacks(path) };
+    const projects = detectProjects(path);
+    return { stacks: [...new Set(projects.map((p) => p.stack))], projects };
   });
 
   /** Global role-session slots (shared by all runs). */
@@ -162,13 +166,28 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       };
     }
 
+    const workspace = parsed.data.workspace ?? "worktree";
+    if (workspace === "in-place") {
+      const problem = await inPlaceProblem(parsed.data.repos.map((r) => ({ path: r.path, baseBranch: r.baseBranch ?? "master" })));
+      if (problem) {
+        reply.code(400).send({ error: "checkout_not_ready", detail: problem });
+        return;
+      }
+    }
+
     const runId = `${label}-${nanoid(6)}`;
-    const repos = parsed.data.repos.map((r) => ({
-      path: r.path,
-      baseBranch: r.baseBranch ?? "master",
-      aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
-      stacks: r.stacks && r.stacks.length > 0 ? r.stacks : detectStacks(r.path),
-    }));
+    const repos = parsed.data.repos.map((r) => {
+      const detected = detectProjects(r.path);
+      // Chosen stacks override detection, but keep the folders detection found for them.
+      const projects = r.stacks && r.stacks.length > 0 ? projectsFor(r.stacks, detected) : detected;
+      return {
+        path: r.path,
+        baseBranch: r.baseBranch ?? "master",
+        aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
+        stacks: [...new Set(projects.map((p) => p.stack))],
+        projects,
+      };
+    });
     const unknown = repos.find((r) => r.stacks.length === 0);
     if (unknown) {
       reply.code(400).send({
@@ -187,6 +206,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       source,
       repos,
       models: Object.keys(models).length > 0 ? models : undefined,
+      workspace,
     });
 
     emit({ type: "run.created", runId, label, repoPaths: repos.map((r) => r.path) });

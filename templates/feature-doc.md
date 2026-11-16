@@ -40,7 +40,7 @@ Number every criterion. Downstream roles (Developer, Unit/Integration/E2E Tester
 
 ## Open questions
 
-- {{bullet with the questioner this is directed at — PM, backend, UX, security}}
+- {{bullet with the questioner this is directed at — PM, backend, UX, security. Only questions still unanswered; when none are left, the section is just "None." — record answered ones in the sections they affect, not here}}
 
 ## Non-goals
 

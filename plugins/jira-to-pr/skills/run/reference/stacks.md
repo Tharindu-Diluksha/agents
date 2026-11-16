@@ -6,7 +6,8 @@ The orchestrator detects each repo's stack and passes it to every subagent, whic
 
 ## Detecting the stack
 
-- `package.json` depending on `vue`/`nuxt` → **vue**; on `react`/`next` → **react**; on `typescript` or with a `tsconfig.json` → **typescript**; otherwise → **node**
+- Check the repo root and each top-level folder (skipping dot-folders, `node_modules`, `bin`, `obj`, `dist` and other output folders); a monorepo such as `web/` + `api/` has one stack per folder, and commands for that stack run from its folder
+- `package.json` depending on `@angular/core` (or an `angular.json`) → **angular**; on `vue`/`nuxt` → **vue**; on `react`/`next` → **react**; on `typescript` or with a `tsconfig.json` → **typescript**; otherwise → **node**
 - a `.sln`/`.slnx`/`.csproj`/`.fsproj` at the root or one level under `src/`, `tests/` or `test/` → **dotnet**
 - `pyproject.toml`, `requirements*.txt`, `setup.py`/`setup.cfg` or `Pipfile` → **python**
 - `go.mod` → **go**
@@ -85,6 +86,25 @@ Vitest or Jest + React Testing Library for unit/component tests, Playwright for 
 | Test / typecheck | `npm test`, `npx vitest run <file>` |
 | Lint | `npm run lint`, `npm run typecheck` |
 | Build | `npm run build` |
+| Dependency audit | `npm audit` |
+| E2E | `npx playwright test` |
+| Install (E2E setup, after approval) | `npm install -D @playwright/test`, `npx playwright install` |
+
+## Angular (`angular`)
+
+The workspace's `ng test` runner (Karma + Jasmine by default; Jest or Vitest if `angular.json` says so), always with `--watch=false`; `ng build` for compile errors; Playwright for E2E.
+
+- **Unit tests:** `*.spec.ts` next to the code, using `TestBed` with the standalone component/service under test in `imports`/`providers`; `HttpTestingController` (`provideHttpClientTesting()`) for HTTP, `RouterTestingHarness` or `provideRouter([])` for routing. Query the DOM via `fixture.nativeElement`/`By.css` and assert what the user sees. Run with `ng test --watch=false` (add `--browsers=ChromeHeadless` for Karma) — without it the runner never exits.
+- **Integration tests:** Test feature routes with the real router and guards (`RouterTestingHarness`), real services and `HttpTestingController` stubbing only the network. If the backend is in the same run (another folder or repo), test its API there.
+- **E2E:** Playwright (`@playwright/test`): tests under the existing e2e folder, one flow per user-facing AC, stable `data-testid`/role selectors, `webServer` in `playwright.config.*` to start the app. An existing suite looks like a `playwright.config.ts|js|mjs` file (or a `test:e2e`/`e2e` script), or an `e2e` target in `angular.json`.
+- **Review checks:** Run `ng build` (new template/type errors are findings) and `ng lint` if configured; `npm audit`. Watch for `bypassSecurityTrust*`/`[innerHTML]` with untrusted data, subscriptions without `takeUntilDestroyed`/`async` pipe, route guards that only hide UI (the API must enforce access too), lazy routes that don't split admin-only code.
+- **Ports:** Start the dev server with `npx ng serve --port $PORT`. Point Playwright's `webServer`/`baseURL` at `E2E_PORT`/`E2E_BASE_URL`.
+
+| Purpose | Commands |
+| ------- | -------- |
+| Test / typecheck | `npx ng test --watch=false --browsers=ChromeHeadless`, `npm test -- --watch=false --browsers=ChromeHeadless`, `npx tsc --noEmit -p tsconfig.app.json` |
+| Lint | `npx ng lint`, `npx tsc --noEmit -p tsconfig.app.json` |
+| Build | `npx ng build` |
 | Dependency audit | `npm audit` |
 | E2E | `npx playwright test` |
 | Install (E2E setup, after approval) | `npm install -D @playwright/test`, `npx playwright install` |
