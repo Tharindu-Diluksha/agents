@@ -13,7 +13,8 @@ import { STACK_IDS, STACKS, stackBashPatterns } from "../src/stacks.js";
 import { checkBashCommand } from "../src/sdk/permissions.js";
 
 const md = (dir: string) => readdirSync(dir).filter((f) => f.endsWith(".md"));
-const read = (dir: string, f: string) => readFileSync(join(dir, f), "utf8");
+// LF regardless of how git checked the files out (CRLF on Windows with core.autocrlf).
+const read = (dir: string, f: string) => readFileSync(join(dir, f), "utf8").replace(/\r\n/g, "\n");
 const body = (text: string) => text.replace(/^---\n[\s\S]*?\n---\n/, ""); // drop frontmatter
 
 describe("shared prompt blocks", () => {

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { detectProjects, detectStacks, projectsFor, projectsOf, STACK_IDS, STACKS, stacksOf } from "../src/stacks.js";
 import { installSteps, spawnable } from "../src/external/deps.js";
 import { isToolchainOutput } from "../src/external/git.js";
@@ -147,7 +147,7 @@ describe("runEnv per stack", () => {
         { path: "/u/api", workPath: "/w/api", stacks: ["dotnet"] },
       ],
     } as unknown as RunRecord);
-    expect(env.PATH!.split(/[:;]/)[0]).toMatch(/\.venv[\\/](bin|Scripts)$/);
+    expect(env.PATH!.split(delimiter)[0]).toMatch(/\.venv[\\/](bin|Scripts)$/);
     expect(env.VIRTUAL_ENV).toBe(join(py, ".venv"));
     expect(env.ASPNETCORE_URLS).toBe("http://localhost:41000");
     expect(env.DOTNET_CLI_TELEMETRY_OPTOUT).toBe("1");

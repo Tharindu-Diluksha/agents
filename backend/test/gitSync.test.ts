@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addWorktree, changedFiles, switchWorktreeBranch, syncWithBase } from "../src/external/git.js";
@@ -9,7 +9,10 @@ import { addWorktree, changedFiles, switchWorktreeBranch, syncWithBase } from ".
 Object.assign(process.env, { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" });
 
 const root = mkdtempSync(join(tmpdir(), "git-sync-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Windows can hold a file briefly after the last git process exits (EPERM/EBUSY): retry.
+afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+// Real git work; spawning git is slow on Windows.
+vi.setConfig({ testTimeout: 30_000 });
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
     cwd,
@@ -21,7 +24,7 @@ let n = 0;
 /** A repo on main with a.txt/b.txt, and a worktree on a fresh feature branch. */
 async function setup(): Promise<{ repo: string; wt: string }> {
   const repo = join(root, `repo${++n}`);
-  execFileSync("mkdir", ["-p", repo]);
+  mkdirSync(repo, { recursive: true });
   git(repo, "init", "-q", "-b", "main");
   writeFileSync(join(repo, "a.txt"), "a1\n");
   writeFileSync(join(repo, "b.txt"), "b1\n");

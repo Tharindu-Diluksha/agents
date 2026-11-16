@@ -5,6 +5,10 @@ import { join } from "node:path";
 import type { RoleOutput, RunState } from "../src/orchestrator/types.js";
 import type { RunRoleAgentArgs, RunRoleAgentResult } from "../src/sdk/runRole.js";
 
+// These tests drive real git (worktrees, merges). Spawning git is much slower on
+// Windows, where several tests need 4–6 s; the 5 s default made them flaky there.
+vi.setConfig({ testTimeout: 30_000 });
+
 /*
  * Drives the real state machine (workflow.ts + runStore + roles) with a
  * scripted fake of `runRoleAgent`, so no model is called. gh and JIRA are
@@ -177,7 +181,8 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  rmSync(tmp, { recursive: true, force: true });
+  // Windows can hold a file briefly after the last git process exits (EPERM/EBUSY): retry.
+  rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 async function driveToReviewGate(runId: string): Promise<void> {
