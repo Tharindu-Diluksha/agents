@@ -103,6 +103,13 @@ Every role ends its turn with a fenced JSON block matching:
 
 When editing role prompts, keep the terminal-JSON-block instruction verbatim — the orchestrator will mark the run `failed` otherwise.
 
+## Project instructions (CLAUDE.md / AGENTS.md)
+
+Role sessions run with `settingSources: []`, so the SDK never loads a target repo's `CLAUDE.md` (enabling `"project"` would also load its `.claude/settings.json` hooks, permissions and MCP servers — don't). Instead `backend/src/orchestrator/projectInstructions.ts` inlines them:
+
+- `RepoTarget.instructionFiles` is recorded at launch: the dialog's comma-separated list, `none` → `[]`, blank → `detectInstructionFiles` (`CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md` at the root). Absent on older runs = those defaults. `GET /api/stacks/detect` also returns what it found.
+- `projectInstructionsSection(record, role)` is added by the Analyst, Developer, Unit Tester, Integration Tester and Reviewer (`PROJECT_INSTRUCTION_ROLES`). Files are read from the worktree, else from the user's checkout (uncommitted files), inlined up to 16k chars each / 40k total, otherwise referenced by path. The section says the role prompt wins on workflow matters, and tells roles to follow `@imports` and nested `CLAUDE.md` files themselves.
+
 ## AI guideline doc (per-repo, optional)
 
 The orchestrator supports an optional per-repo AI guideline document. In code and in `run.json` it lives on each `RepoTarget` as `aiGuidelinePath`:

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RunRecord } from "../orchestrator/types.js";
+import { projectInstructionsSection } from "../orchestrator/projectInstructions.js";
 import {  aiGuidelineSection,
   artifactPath,
   artifactRelative,
@@ -75,6 +76,7 @@ export const reviewer: RoleSpec = {
       "5. **General code quality**: dead code, misleading names, unnecessary complexity.",
       stackSection(record, "reviewer"),
       aiGuidelineSection(record, "reviewer"),
+      projectInstructionsSection(record, "reviewer"),
       "",
       "You have read-only access to source, plus git diff/log and lint/typecheck/audit. You MAY NOT modify source files; you can only write the two report files below.",
       "",

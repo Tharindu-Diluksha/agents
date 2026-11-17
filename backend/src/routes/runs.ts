@@ -34,11 +34,18 @@ import {
   startRun,
 } from "../orchestrator/workflow.js";
 import { inPlaceProblem } from "../orchestrator/workspaces.js";
+import { detectInstructionFiles, instructionFileProblem } from "../orchestrator/projectInstructions.js";
 
 const RepoBody = z.object({
   path: z.string().min(1),
   baseBranch: z.string().optional(),
   aiGuidelinePath: z.string().optional(),
+  /** Instruction files for AI agents (CLAUDE.md …), relative to the repo. Omitted = detect; [] = none. */
+  instructionFiles: z
+    .array(z.string().trim().min(1).max(300))
+    .max(10)
+    .refine((files) => files.every((f) => !instructionFileProblem(f)), { message: "instruction files must be paths inside the repo" })
+    .optional(),
   /** Explicit stacks; omitted or empty = auto-detect from the repo's files. */
   stacks: z.array(z.enum(STACK_IDS)).optional(),
 });
@@ -166,7 +173,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
     const projects = detectProjects(path);
-    return { stacks: [...new Set(projects.map((p) => p.stack))], projects };
+    return { stacks: [...new Set(projects.map((p) => p.stack))], projects, instructionFiles: detectInstructionFiles(path) };
   });
 
   /** Global role-session slots (shared by all runs). */
@@ -247,6 +254,7 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
         path: r.path,
         baseBranch: r.baseBranch ?? "master",
         aiGuidelinePath: resolveAiGuidelinePath(r.path, r.aiGuidelinePath),
+        instructionFiles: r.instructionFiles ?? detectInstructionFiles(r.path),
         stacks: [...new Set(projects.map((p) => p.stack))],
         projects,
       };

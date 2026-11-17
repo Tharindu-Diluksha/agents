@@ -30,7 +30,7 @@ export const api = {
   async refreshOverlaps(id: string): Promise<{ overlaps: Overlap[] }> {
     return json(await fetch(`/api/runs/${id}/overlaps/refresh`, { method: "POST" }));
   },
-  async detectStacks(path: string): Promise<{ stacks: StackId[]; projects: StackProject[] }> {
+  async detectStacks(path: string): Promise<{ stacks: StackId[]; projects: StackProject[]; instructionFiles: string[] }> {
     return json(await fetch(`/api/stacks/detect?path=${encodeURIComponent(path)}`));
   },
   async archiveRun(id: string, force = false): Promise<void> {
@@ -71,7 +71,7 @@ export const api = {
   },
   async launchRun(input: {
     source: RunSource;
-    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string; stacks?: StackId[] }>;
+    repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string; instructionFiles?: string[]; stacks?: StackId[] }>;
     models?: Partial<Record<RoleId, string>>;
     efforts?: Partial<Record<RoleId, EffortLevel>>;
     disabledRoles?: RoleId[];

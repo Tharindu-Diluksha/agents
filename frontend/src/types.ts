@@ -120,6 +120,8 @@ export interface RepoTarget {
   projects?: StackProject[];
   baseBranch: string;
   aiGuidelinePath: string | null;
+  /** CLAUDE.md / AGENTS.md files given to the agents; [] = none, absent = defaults (older runs). */
+  instructionFiles?: string[];
   /** This run's git worktree for the repo, once created. */
   workPath?: string | null;
   branch?: string | null;
