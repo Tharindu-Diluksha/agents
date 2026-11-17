@@ -29,6 +29,7 @@ export const unitTester: RoleSpec = {
     BASH.gitRead,
     BASH.gitBranchRead,
     BASH.gitCommit,
+    BASH.gitRm,
     BASH.gitRestore,
     BASH.ls,
   ],
@@ -49,9 +50,9 @@ export const unitTester: RoleSpec = {
       lines.push(
         "No production code for this feature has been written yet. Write the unit tests listed in the plan's **Test plan** section (and any obvious edge cases it misses) so they describe the required behaviour.",
         "",
-        "1. Find the repo's unit test setup (runner config, existing `*.test.ts` / `*.spec.ts` files, naming and folder conventions) and follow it. If the repo has no unit test runner at all, emit `status: \"blocked\"` explaining what is missing.",
-        "2. Write the tests. Only create or edit test files (and test fixtures/helpers). Do NOT write production code — not even stubs.",
-        "3. Run them and confirm each new test fails **for the right reason** (an assertion fails, or the module/export under test doesn't exist yet) — not because of a typo or broken setup in the test itself.",
+        "1. Start from the plan's **Code map**: it names the test projects, their conventions and the signatures involved. Open other files only for what it doesn't say. If the repo has no unit test runner at all, emit `status: \"blocked\"` explaining what is missing.",
+        "2. Write the tests. Only create or edit test files (and test fixtures/helpers). Do NOT write production code, with one exception: if the Stack section has a **Failing tests first (RED)** line, add exactly the compile-only stubs it describes, and list each one in the report.",
+        "3. Run them and confirm each new test fails **for the right reason** (an assertion fails, the stub's not-implemented error, or the module/export under test doesn't exist yet) — not because of a typo or broken setup in the test itself.",
         "4. Make sure tests that existed before still pass.",
         "5. Commit the new tests (e.g. `test: add failing unit tests for <feature>`). Do NOT push.",
         `6. Write \`${reportPath}\` using \`templates/unit-test-report.md\` (fill the RED section), then emit \`status: "done"\`. The orchestrator hands over to the Developer.`,
@@ -81,8 +82,10 @@ export const unitTester: RoleSpec = {
       red ? "" : maybeAttach(record, "unitTester", "unit-test-report.md", "Your unit test report so far"),
       "",
       "## Boundaries",
-      "- Only test files, fixtures and test helpers. Never production code.",
-      bashBoundaryLine(record, "git status/diff/log/show/add/commit/restore, ls/dir", unitTester),
+      red
+        ? "- Only test files, fixtures and test helpers, plus the compile-only stubs the Stack section allows (if any). No production logic."
+        : "- Only test files, fixtures and test helpers. Never production code.",
+      bashBoundaryLine(record, "git status/diff/log/show/add/commit/rm/mv/restore, ls/dir", unitTester),
       "- You MUST NOT push.",
       stackSection(record, "unitTester"),
       aiGuidelineSection(record, "unitTester"),

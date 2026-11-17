@@ -90,6 +90,7 @@ export function renderStackGuide(): string {
       g.summary,
       "",
       `- **Unit tests:** ${g.unit}`,
+      ...(g.unitRed ? [`- **Failing tests first (RED):** ${g.unitRed}`] : []),
       `- **Integration tests:** ${g.integration}`,
       `- **E2E:** ${g.e2e} An existing suite looks like ${g.e2eSuite}.`,
       `- **Review checks:** ${g.review}`,

@@ -70,6 +70,13 @@ export function headerFor(record: RunRecord, roleHuman: string): string {
       "**Multi-repo run.** When editing files, use absolute paths. When running shell commands, prefix with `cd <absolutePath> && ` to target a specific repo — the orchestrator's Bash allowlist is scoped to the repos listed above.",
     );
   }
+  lines.push(
+    "",
+    "**Turn budget.** Your session may use only a limited number of turns (one model response with its tool calls is one turn); a role that runs out is cut off. Make each one count:",
+    "- Put independent tool calls in the same response: read several files, run several searches, edit several files at once.",
+    "- Build on the upstream artifacts (the plan's **Code map**, the reports) instead of re-surveying the repo.",
+    "- Build and test the smallest unit that covers your change while you work; run the full suite once at the end.",
+  );
   const context = attachmentsPromptSection(record);
   if (context) lines.push(context);
   lines.push("");
@@ -198,6 +205,8 @@ export const BASH = {
   /** Listing branches only — no create/delete/rename. */
   gitBranchRead: /^git\s+branch(\s+(--show-current|--list|-a|-r|-v|-vv))*\s*$/,
   gitCommit: /^git\s+(add|commit)(\s|$)/,
+  /** Delete or move tracked files (the change is still reviewed before any push). */
+  gitRm: /^git\s+(rm|mv)\s/,
   /** Discard local edits to files (never switches branches). */
   gitRestore: /^git\s+(restore\s|checkout\s+--\s)/,
   gitStash: /^git\s+stash(\s|$)/,
@@ -224,7 +233,16 @@ const CAPABILITY_WORDS: Record<Capability, string> = {
 /** The "Bash boundaries" prompt line for a role, naming its toolchain capabilities. */
 export function bashBoundaryLine(record: RunRecord, gitPart: string, spec: RoleSpec): string {
   const caps = [...spec.capabilities, ...(spec.extraCapabilities?.(record) ?? [])].map((c) => CAPABILITY_WORDS[c]);
-  return `- One Bash command at a time (no \`;\`, \`&&\`, pipes or redirects, except a leading \`cd <repo or a folder inside it> && \`): ${gitPart}, plus the stack's own commands to ${caps.join(", ")} — see the Stack section. Anything else is blocked.`;
+  const lines = [
+    `- One Bash command at a time (no \`;\`, \`&&\`, pipes or redirects, except a leading \`cd <repo or a folder inside it> && \`): ${gitPart}, plus the stack's own commands to ${caps.join(", ")} — see the Stack section. Anything else is blocked.`,
+    "- Look at files with Read, Grep and Glob, not `cat`/`type`/`ls` chains. The leading `cd` only works into the target repos; for a folder outside them (e.g. a guideline repo) use Glob or `ls <folder>`.",
+  ];
+  if (spec.bashAllowList.includes(BASH.gitCommit)) {
+    lines.push(
+      "- Commands must be a single line, so a commit message is one line: `git commit -m \"<summary>\"`. For a message with a body, Write it to a file in this run's artifact folder and run `git commit -F <that file>`.",
+    );
+  }
+  return lines.join("\n");
 }
 
 const ROLE_EXAMPLE_CAPS: Partial<Record<RoleId, Array<Exclude<Capability, "inspect">>>> = {
@@ -288,6 +306,7 @@ export function stackSection(record: RunRecord, role: RoleId): string {
         const label = k === "unit" ? "Unit tests" : k === "integration" ? "Integration tests" : k === "e2e" ? "E2E" : "Review checks";
         lines.push(`  - ${label}: ${g[k]}`);
       }
+      if (g.unitRed && (role === "unitTester" || role === "developer")) lines.push(`  - Failing tests first (RED): ${g.unitRed}`);
       if (role === "e2eTester") {
         lines.push(`  - An existing E2E suite looks like: ${g.e2eSuite}.`);
         lines.push(`  - Ports: ${g.ports}`);

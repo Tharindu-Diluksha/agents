@@ -45,6 +45,11 @@ export interface StackGuidance {
   /** How to recognise an existing E2E suite. */
   e2eSuite: string;
   review: string;
+  /**
+   * Compiled languages only: how RED-phase unit tests fail at run time when the
+   * code under test doesn't exist yet (a missing type breaks the whole test build).
+   */
+  unitRed?: string;
   /** How a server under test picks its port (the run's ports come as env vars). */
   ports: string;
 }
@@ -227,7 +232,7 @@ export const STACKS: Record<StackId, StackProfile> = {
       inspect: [/^cat\s+[\w./\\-]+\.(csproj|fsproj|sln|props|targets)$/, /^cat\s+(global\.json|nuget\.config|NuGet\.Config|appsettings[\w.-]*\.json)$/],
     },
     examples: {
-      test: ["dotnet test", "dotnet test --filter \"FullyQualifiedName~Orders\""],
+      test: ["dotnet test", "dotnet test tests/App.Tests/App.Tests.csproj --nologo --filter \"FullyQualifiedName~Orders\""],
       lint: ["dotnet build", "dotnet format --verify-no-changes"],
       build: ["dotnet build"],
       audit: ["dotnet list package --vulnerable"],
@@ -236,7 +241,8 @@ export const STACKS: Record<StackId, StackProfile> = {
     },
     guidance: {
       summary: "xUnit, NUnit or MSTest (whichever test projects use) via `dotnet test`, `WebApplicationFactory` for integration, Microsoft.Playwright for E2E.",
-      unit: "Add tests to the existing `*.Tests` project for the code under test (same framework and assertion library: xUnit `[Fact]/[Theory]`, NUnit `[Test]`, MSTest `[TestMethod]`). Run a subset with `dotnet test --filter`. Only create a new test project if none exists, mirroring the solution's conventions.",
+      unit: "Add tests to the existing `*.Tests` project for the code under test (same framework and assertion library: xUnit `[Fact]/[Theory]`, NUnit `[Test]`, MSTest `[TestMethod]`). Only create a new test project if none exists, mirroring the solution's conventions. While working, build and test only the test project you changed (`dotnet test <path>.csproj --nologo --filter …`); run the whole solution once at the end. A test-project build also builds the projects it references, so a separate `dotnet build` first is rarely needed.",
+      unitRed: "A test that refers to a type or member that doesn't exist yet stops the whole test project from compiling, so no test runs. Add only the compile-only stubs the new tests need in production code: new types, members, parameters or DTO properties with the planned signatures, whose bodies `throw new NotImplementedException()` (properties may be plain auto-properties). No logic. The new tests then fail when they run, and existing tests keep compiling and passing.",
       integration: "For ASP.NET Core use `WebApplicationFactory<Program>` (Microsoft.AspNetCore.Mvc.Testing) and call real endpoints with its `HttpClient`; use Testcontainers or the repo's test database setup only if it already exists, otherwise mark DB-dependent tests env-missing.",
       e2e: "Microsoft.Playwright with the repo's test framework (e.g. `Microsoft.Playwright.NUnit`/`.MSTest`/xUnit fixture) in a dedicated E2E test project, run via `dotnet test`. Browsers install with `pwsh bin/<Configuration>/<tfm>/playwright.ps1 install`.",
       e2eSuite: "a test project referencing `Microsoft.Playwright` (check the `*.csproj` files)",
@@ -308,6 +314,7 @@ export const STACKS: Record<StackId, StackProfile> = {
     guidance: {
       summary: "`go test ./...` with table-driven tests, `httptest` for integration, `go vet`/golangci-lint for checks.",
       unit: "`_test.go` files next to the code (same package, or `_test` package for black-box tests), table-driven `t.Run` subtests, the standard `testing` package plus whatever assertion library the repo already uses. Run one test with `go test ./pkg/... -run TestName`.",
+      unitRed: "Go won't compile a package whose tests refer to a missing function, type or field, so none of that package's tests run. Add only the compile-only stubs the new tests need: the planned declarations with bodies that `panic(\"not implemented\")` (struct fields as declared). No logic.",
       integration: "Use `httptest.NewServer`/`httptest.NewRecorder` against the real handlers and services; guard tests that need external services with a build tag or `testing.Short()` and mark them env-missing.",
       e2e: "If the repo (or another repo in this run) has a Playwright setup, use it against the Go server. Otherwise write Go tests behind an `e2e` build tag that start the server on `$PORT` and drive it over HTTP (`go test -tags e2e ./...`).",
       e2eSuite: "a Playwright config in the repo or a sibling frontend, or tests behind an `e2e` build tag",

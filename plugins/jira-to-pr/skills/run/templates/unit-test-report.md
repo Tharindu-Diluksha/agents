@@ -10,6 +10,7 @@
 | - | ------------------ | ----- | ------------- | ----- |
 | 1 | `{{src/foo.test.ts › adds a widget}}` | AC-1 | {{assertion fails / export missing}} | {{...}} |
 
+- Compile-only stubs added (compiled languages only; the Developer replaces them): {{`path` — `signature`, or "none"}}.
 - Pre-existing tests: {{N}} passing (unchanged).
 - Commit: `{{sha}}`
 

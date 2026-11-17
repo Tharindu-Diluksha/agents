@@ -18,7 +18,10 @@ vi.mock("../src/config.js", async (importOriginal) => {
   };
 });
 // No model calls: the routes module imports the workflow, which imports the SDK wrapper.
-vi.mock("../src/sdk/runRole.js", () => ({ runRoleAgent: vi.fn() }));
+vi.mock("../src/sdk/runRole.js", async (importOriginal) => ({
+  RoleRunError: (await importOriginal<typeof import("../src/sdk/runRole.js")>()).RoleRunError,
+  runRoleAgent: vi.fn(),
+}));
 
 const { registerRunsRoutes } = await import("../src/routes/runs.js");
 const { createRun, loadRun } = await import("../src/orchestrator/runStore.js");

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { config, paths } from "../config.js";
 import { emit, forgetEventLog } from "../events.js";
 import { log } from "../log.js";
-import { runRoleAgent } from "../sdk/runRole.js";
+import { RoleRunError, runRoleAgent } from "../sdk/runRole.js";
 import { roles as roleRegistry } from "../roles/index.js";
 import { planApproved } from "../roles/developer.js";
 import { bashAllowListFor } from "../roles/common.js";
@@ -330,8 +330,12 @@ export function runningStateFor(record: RunRecord, role: RoleId): RunState {
     case "developer":
       return planApproved(record) ? "developer_implementing" : "developer_planning";
     case "unitTester":
-      // The first Unit Tester run writes failing tests (RED); every later run verifies (GREEN).
-      return latestAttempt(record, "unitTester") ? "unit_tests_green_running" : "unit_tests_red_running";
+      // RED (write failing tests) until the Developer has started implementing;
+      // after that every run verifies (GREEN). Keying on an earlier attempt
+      // would skip an unfinished RED phase (e.g. one cut off by its turn limit).
+      return record.stateHistory.some((h) => h.to === "developer_implementing")
+        ? "unit_tests_green_running"
+        : "unit_tests_red_running";
     case "integrationTester":
       return "integration_tester_running";
     case "reviewer":
@@ -893,8 +897,25 @@ async function runRoleAsync(
     const msg = errMsg(err);
     attempt.status = "failed";
     attempt.errorMessage = msg;
+    // Keep what the session spent, even though it did not finish.
+    if (err instanceof RoleRunError) {
+      if (err.sessionId) attempt.sessionId = err.sessionId;
+      attempt.costUsd = err.metrics.costUsd;
+      attempt.numTurns = err.metrics.numTurns;
+      attempt.usage = err.metrics.usage;
+    }
     saveRun(record);
     emit({ type: "role.ended", runId, role, status: "failed", artifacts: [] });
+    if (err instanceof RoleRunError && err.limit) {
+      // The session is intact: "Jump" to the role resumes it where it stopped.
+      pause(
+        record,
+        err.limit === "max_turns"
+          ? `${msg}. Use "Jump" to this role to continue the same session (MAX_TURNS_<ROLE> / MAX_TURN_CONTINUATIONS raise the limit).`
+          : `${msg}. Use "Jump" to this role to continue anyway.`,
+      );
+      return;
+    }
     fail(record, `${spec.title}: ${msg}`);
   } finally {
     release?.();

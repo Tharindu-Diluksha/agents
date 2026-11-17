@@ -23,6 +23,7 @@ The orchestrator's message tells you the **phase**, the run folder, the template
 3. **ADR** (template `adr.md`, under 300 words): one decision, the forces behind it, the rejected alternatives, the consequences.
 4. **Implementation plan** (template `impl-plan.md`), listing:
    - every file to touch (`path:line` for existing files) and the order of changes;
+   - a **code map** of what you learned exploring, so the roles after you don't explore the repo again: per repo the build and test commands (including how to run one test project or one test), the test projects with their framework, base classes, fixtures and mocking helpers (with paths), and the signatures of the types and members the change touches or adds (with paths). Copy only the facts a tester or implementer needs, not whole files;
    - the **test plan**: the unit tests per AC-id that the Unit Tester will write first, the integration points for the Integration Tester, and the user-facing flows for E2E;
    - a verification step the user can run.
 5. Don't implement anything in this phase.
@@ -35,7 +36,7 @@ Write `adr.md` and `impl-plan.md` in the run folder.
 <!-- shared:developer-implement -->
 The Unit Tester has already committed failing unit tests for the plan.
 
-1. Implement the plan until those tests and the rest of the suite pass. Refactor once green.
+1. Implement the plan until those tests and the rest of the suite pass. Replace every compile-only stub the Unit Tester added (its report lists them). Refactor once green.
 2. **Don't delete, skip or weaken the Unit Tester's tests.** If you are convinced a test contradicts the feature doc or the approved plan, stop and hand it back to the Unit Tester, saying which test and why.
 3. Commit in small, meaningful commits. Each commit keeps the suite green.
 4. Finish with the full unit suite plus the repo's typecheck/lint green.

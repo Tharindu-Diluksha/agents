@@ -8,6 +8,18 @@
 - [ ] The unit test suite (`{{command}}`) is green on the base branch (verified by the Developer before planning).
 - [ ] Target branch per repo: `{{feature/PROJ-123-...}}` (created off each repo's base branch).
 
+## Code map
+
+What you learned exploring, so the Unit Tester, the other testers and your own implementation phase don't explore again. Facts only; no whole files.
+
+### {{repo path}}
+
+- **Build / test**: `{{full-suite command}}`; one project: `{{command}}`; one test: `{{command with filter}}`.
+- **Test projects**: `{{path}}` — {{framework, assertion library}}; base classes / fixtures / mocking helpers: `{{path}}` ({{what they provide}}).
+- **Existing tests to extend**: `{{path}}` — {{what they cover}}.
+- **Types and members involved** (current signatures, plus the ones the change adds):
+  - `{{path}}` — `{{signature}}` — {{role in the change}}.
+
 ## File plan
 
 For each file: path, what changes, and why.

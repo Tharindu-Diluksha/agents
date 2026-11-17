@@ -176,7 +176,12 @@ describe("stackSection", () => {
     expect(unit).toContain("`/w/web`** — Vue");
     expect(unit).toContain("@vue/test-utils");
     expect(unit).toContain("`/u/api`** — C# / .NET");
-    expect(unit).toContain("dotnet test --filter");
+    expect(unit).toContain("--nologo --filter");
+    // Compile-only stub guidance: only for the roles that write or replace RED tests, only for compiled stacks.
+    expect(unit).toContain("Failing tests first (RED): A test that refers to a type");
+    expect(unit.match(/Failing tests first/g)).toHaveLength(1); // the Vue repo has none
+    expect(stackSection(record, "developer")).toContain("NotImplementedException");
+    expect(stackSection(record, "reviewer")).not.toContain("Failing tests first");
     expect(unit).not.toContain("Integration tests:");
     expect(stackSection(record, "integrationTester")).toContain("Integration tests: For ASP.NET Core use `WebApplicationFactory");
     expect(stackSection(record, "e2eTester")).toContain("An existing E2E suite looks like");

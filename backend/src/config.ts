@@ -24,6 +24,12 @@ function roleEffort(envSuffix: string): EffortLevel | null {
   return (EFFORT_LEVELS as readonly string[]).includes(raw) ? (raw as EffortLevel) : null;
 }
 
+/** `MAX_TURNS_<ROLE>` overrides the role's built-in turn limit; unset = the role's default. */
+function roleMaxTurns(envSuffix: string): number | undefined {
+  const n = Number(process.env[`MAX_TURNS_${envSuffix}`]);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 function num(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -94,6 +100,21 @@ export const config = {
       ...["ANALYST", "DEVELOPER", "UNIT_TESTER", "INTEGRATION_TESTER", "REVIEWER", "E2E_TESTER", "PR_CREATOR"].map(roleModel),
     ]),
   ],
+  /** Per-role SDK turn limit per session (`MAX_TURNS_<ROLE>`); undefined = the role's default in roles/<role>.ts. */
+  maxTurns: {
+    analyst: roleMaxTurns("ANALYST"),
+    developer: roleMaxTurns("DEVELOPER"),
+    unitTester: roleMaxTurns("UNIT_TESTER"),
+    integrationTester: roleMaxTurns("INTEGRATION_TESTER"),
+    reviewer: roleMaxTurns("REVIEWER"),
+    e2eTester: roleMaxTurns("E2E_TESTER"),
+    prCreator: roleMaxTurns("PR_CREATOR"),
+  } as Record<string, number | undefined>,
+  /**
+   * How many times a role that used up its turns is resumed in the same session
+   * before the run pauses (`MAX_TURN_CONTINUATIONS`). 0 = pause straight away.
+   */
+  maxTurnContinuations: num("MAX_TURN_CONTINUATIONS", 2),
   /** Fix loops (review rejection, tester → Developer hand-back) allowed before the run pauses. 0 = unlimited. */
   maxFixIterations: num("MAX_FIX_ITERATIONS", 5),
   /** Total USD a run may spend before it pauses. 0 = unlimited. */

@@ -113,7 +113,8 @@ The workspace's `ng test` runner (Karma + Jasmine by default; Jest or Vitest if 
 
 xUnit, NUnit or MSTest (whichever test projects use) via `dotnet test`, `WebApplicationFactory` for integration, Microsoft.Playwright for E2E.
 
-- **Unit tests:** Add tests to the existing `*.Tests` project for the code under test (same framework and assertion library: xUnit `[Fact]/[Theory]`, NUnit `[Test]`, MSTest `[TestMethod]`). Run a subset with `dotnet test --filter`. Only create a new test project if none exists, mirroring the solution's conventions.
+- **Unit tests:** Add tests to the existing `*.Tests` project for the code under test (same framework and assertion library: xUnit `[Fact]/[Theory]`, NUnit `[Test]`, MSTest `[TestMethod]`). Only create a new test project if none exists, mirroring the solution's conventions. While working, build and test only the test project you changed (`dotnet test <path>.csproj --nologo --filter …`); run the whole solution once at the end. A test-project build also builds the projects it references, so a separate `dotnet build` first is rarely needed.
+- **Failing tests first (RED):** A test that refers to a type or member that doesn't exist yet stops the whole test project from compiling, so no test runs. Add only the compile-only stubs the new tests need in production code: new types, members, parameters or DTO properties with the planned signatures, whose bodies `throw new NotImplementedException()` (properties may be plain auto-properties). No logic. The new tests then fail when they run, and existing tests keep compiling and passing.
 - **Integration tests:** For ASP.NET Core use `WebApplicationFactory<Program>` (Microsoft.AspNetCore.Mvc.Testing) and call real endpoints with its `HttpClient`; use Testcontainers or the repo's test database setup only if it already exists, otherwise mark DB-dependent tests env-missing.
 - **E2E:** Microsoft.Playwright with the repo's test framework (e.g. `Microsoft.Playwright.NUnit`/`.MSTest`/xUnit fixture) in a dedicated E2E test project, run via `dotnet test`. Browsers install with `pwsh bin/<Configuration>/<tfm>/playwright.ps1 install`. An existing suite looks like a test project referencing `Microsoft.Playwright` (check the `*.csproj` files).
 - **Review checks:** Run `dotnet build` (treat new warnings as findings), `dotnet format --verify-no-changes` if the repo uses it, `dotnet list package --vulnerable`. Watch for missing `await`/`async void`, `IDisposable` leaks, SQL built by string concatenation, missing `[Authorize]`, nullable warnings.
@@ -121,7 +122,7 @@ xUnit, NUnit or MSTest (whichever test projects use) via `dotnet test`, `WebAppl
 
 | Purpose | Commands |
 | ------- | -------- |
-| Test / typecheck | `dotnet test`, `dotnet test --filter "FullyQualifiedName~Orders"` |
+| Test / typecheck | `dotnet test`, `dotnet test tests/App.Tests/App.Tests.csproj --nologo --filter "FullyQualifiedName~Orders"` |
 | Lint | `dotnet build`, `dotnet format --verify-no-changes` |
 | Build | `dotnet build` |
 | Dependency audit | `dotnet list package --vulnerable` |
@@ -152,6 +153,7 @@ pytest (or the repo's `unittest` suite), run inside the run's virtualenv; pytest
 `go test ./...` with table-driven tests, `httptest` for integration, `go vet`/golangci-lint for checks.
 
 - **Unit tests:** `_test.go` files next to the code (same package, or `_test` package for black-box tests), table-driven `t.Run` subtests, the standard `testing` package plus whatever assertion library the repo already uses. Run one test with `go test ./pkg/... -run TestName`.
+- **Failing tests first (RED):** Go won't compile a package whose tests refer to a missing function, type or field, so none of that package's tests run. Add only the compile-only stubs the new tests need: the planned declarations with bodies that `panic("not implemented")` (struct fields as declared). No logic.
 - **Integration tests:** Use `httptest.NewServer`/`httptest.NewRecorder` against the real handlers and services; guard tests that need external services with a build tag or `testing.Short()` and mark them env-missing.
 - **E2E:** If the repo (or another repo in this run) has a Playwright setup, use it against the Go server. Otherwise write Go tests behind an `e2e` build tag that start the server on `$PORT` and drive it over HTTP (`go test -tags e2e ./...`). An existing suite looks like a Playwright config in the repo or a sibling frontend, or tests behind an `e2e` build tag.
 - **Review checks:** Run `go vet`, `gofmt -l`, `golangci-lint run` if configured, `govulncheck` if installed. Watch for unchecked errors, goroutine leaks, data races (suggest `go test -race`), missing `defer Close()`, context not propagated.
