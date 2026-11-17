@@ -1,10 +1,12 @@
-import type { RoleId, RunEvent } from "./types.js";
+import { STATE_LABELS, type RoleId, type RunEvent } from "./types.js";
 
 export type Entry =
   | { kind: "message"; text: string; subtype: string }
   | { kind: "tool_call"; name: string; input: unknown; toolUseId: string }
   | { kind: "tool_result"; toolUseId: string; isError: boolean; summary: string }
-  | { kind: "state"; text: string };
+  | { kind: "state"; text: string }
+  /** The run moved to another state, e.g. "Developer implementing" after this role finished. */
+  | { kind: "transition"; text: string; gate: boolean };
 
 export interface Group {
   /** 1-based attempt number (from role.started, else inferred). */
@@ -35,7 +37,7 @@ export function groupByAttempt(events: RunEvent[], role: RoleId): Group[] {
   for (const ev of events) {
     if (!("role" in ev) || ev.role !== role) {
       if (ev.type === "run.transitioned") {
-        const e: Entry = { kind: "state", text: `→ ${ev.to}` };
+        const e: Entry = { kind: "transition", text: STATE_LABELS[ev.to] ?? ev.to, gate: ev.to.startsWith("awaiting_") };
         if (current && !current.ended) current.entries.push(e);
         else between.push(e);
       }

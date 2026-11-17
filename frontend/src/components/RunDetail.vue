@@ -10,6 +10,7 @@ import {
   formatUsd,
   ROLE_LABELS,
   ROLES,
+  STATE_LABELS,
   stateChipClass,
   totalTokens,
   type AttemptUsage,
@@ -30,11 +31,45 @@ const events = ref<RunEvent[]>([]);
 const activeRole = ref<RoleId>("analyst");
 const activeArtifact = ref<string | null>(null);
 
+let tabChosen = false;
 async function refresh() {
   try {
     detail.value = await api.getRun(props.id);
+    // Open on the role that's working (or waiting for approval) rather than always the Analyst.
+    if (!tabChosen) {
+      tabChosen = true;
+      if (currentRole.value) activeRole.value = currentRole.value;
+    }
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** The role the run is on right now: running or queued, else the one whose approval is pending. */
+const currentRole = computed<RoleId | null>(() => {
+  const d = detail.value;
+  if (!d) return null;
+  for (const r of ROLES) {
+    const last = d.roles?.[r]?.at(-1);
+    if (last && (last.status === "running" || last.status === "queued")) return r;
+  }
+  return d.pendingApproval?.role ?? null;
+});
+
+/** Shown when the tab you're on has finished and the run has moved on to another role. */
+const movedOn = computed(() => {
+  const role = currentRole.value;
+  if (!role || role === activeRole.value || !detail.value) return null;
+  const busy = detail.value.roles?.[role]?.at(-1)?.status;
+  return { role, label: STATE_LABELS[detail.value.state], waiting: busy !== "running" && busy !== "queued" };
+});
+
+/** The role whose attempt ended last; if you were watching it, the next role's tab opens when it starts. */
+let lastEnded: RoleId | null = null;
+function followHandoff(ev: RunEvent) {
+  if (ev.type === "role.ended") lastEnded = ev.role;
+  if ((ev.type === "role.started" || ev.type === "role.queued") && ev.role !== activeRole.value && activeRole.value === lastEnded) {
+    activeRole.value = ev.role;
   }
 }
 
@@ -74,6 +109,7 @@ function applyLive(ev: RunEvent) {
     liveUsage.value = { ...liveUsage.value, [ev.role]: { usage: ev.usage, costUsd: ev.costUsd } };
     return;
   }
+  followHandoff(ev);
   if (ev.type === "role.queued" || ev.type === "role.started") refresh();
   if (ev.type === "role.started" || ev.type === "role.ended") {
     const { [ev.role]: _drop, ...rest } = liveUsage.value;
@@ -390,6 +426,13 @@ async function removeWorktrees() {
           {{ ROLE_LABELS[activeRole] }} — stream
           <span class="muted mono" style="font-size: 11px; font-weight: normal">model: {{ detail.effectiveModels[activeRole] }}</span>
         </h3>
+        <div v-if="movedOn" class="moved-on" :class="{ waiting: movedOn.waiting }">
+          <span>
+            <strong>{{ movedOn.waiting ? "Waiting:" : "Now running:" }}</strong>
+            {{ movedOn.label }}<template v-if="!movedOn.waiting"> — the run moved on from this step.</template>
+          </span>
+          <button class="primary" @click="activeRole = movedOn.role">View {{ ROLE_LABELS[movedOn.role] }} →</button>
+        </div>
         <RoleStream :role="activeRole" :events="events" :attempts="detail.roles?.[activeRole] ?? []" />
       </section>
 
@@ -440,6 +483,8 @@ async function removeWorktrees() {
 .main > .panel { min-width: 0; }
 @media (max-width: 1100px) { .main { grid-template-columns: minmax(0, 1fr); } }
 .stream-panel h3, .art-panel h3 { margin: 0 0 8px; }
+.moved-on { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--panel2); font-size: 13px; }
+.moved-on.waiting { border-color: var(--warn); }
 .sent-feedback { border-color: var(--accent); }
 .sent-feedback textarea { margin-top: 8px; width: 100%; min-height: 120px; resize: vertical; opacity: 0.85; cursor: not-allowed; }
 .error { color: var(--danger); }

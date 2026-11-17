@@ -41,6 +41,30 @@ export type RunState =
   | "done"
   | "failed";
 
+/** Plain-language run states, for hand-off lines in the stream. */
+export const STATE_LABELS: Record<RunState, string> = {
+  created: "Created",
+  analyst_running: "Analyst analysing",
+  awaiting_feature_doc_approval: "Waiting for your feature-doc approval",
+  awaiting_jira_comment_decision: "Waiting for your JIRA comment decision",
+  developer_planning: "Developer planning",
+  awaiting_plan_approval: "Waiting for your plan approval",
+  awaiting_branch_names: "Waiting for your branch names",
+  unit_tests_red_running: "Unit Tester writing failing tests",
+  developer_implementing: "Developer implementing",
+  unit_tests_green_running: "Unit Tester verifying",
+  integration_tester_running: "Integration Tester testing",
+  reviewer_running: "Reviewer reviewing",
+  awaiting_review_decision: "Waiting for your review decision",
+  e2e_tester_running: "E2E Tester testing",
+  awaiting_test_suite_approval: "Waiting for your E2E suite approval",
+  pr_creator_running: "PR Creator writing the PR",
+  awaiting_pr_approval: "Waiting for your PR approval",
+  paused: "Run paused",
+  done: "Run complete",
+  failed: "Run failed",
+};
+
 export type ApprovalAction =
   | "post_jira_comment"
   | "create_test_suite"
