@@ -92,6 +92,35 @@ export interface RunRoleAgentResult {
   metrics?: RunMetrics;
 }
 
+/** Why a role stopped before finishing: the SDK turn limit or the run's cost budget. */
+export type RoleLimit = "max_turns" | "max_budget";
+
+/**
+ * Thrown by runRoleAgent when the session ended with an error. Carries what the
+ * session already spent (and its id), so the caller can record cost and, for a
+ * limit, pause the run instead of failing it.
+ */
+export class RoleRunError extends Error {
+  constructor(
+    message: string,
+    readonly metrics: RunMetrics,
+    readonly sessionId?: string,
+    readonly limit?: RoleLimit,
+  ) {
+    super(message);
+    this.name = "RoleRunError";
+  }
+}
+
+/** The prompt sent when a role is resumed after hitting its turn limit. */
+export function continuationPrompt(maxTurns: number, continuation: number, maxContinuations: number): string {
+  return [
+    `[orchestrator] You reached the turn limit (${maxTurns} turns) for this session before finishing, so the orchestrator resumed you (continuation ${continuation} of ${maxContinuations}).`,
+    "Continue the same task from where you stopped. Do not redo finished work: check the files you already changed instead of re-reading everything.",
+    "Work efficiently (batch related edits, run focused tests rather than the whole suite on every change) and end with the terminal JSON block as instructed.",
+  ].join("\n");
+}
+
 export interface RunMetrics {
   costUsd: number;
   numTurns: number;
@@ -133,6 +162,7 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
   const builtinTools = allowedTools.filter((t) => !t.startsWith("mcp__"));
   const autoApproved = allowedTools.filter((t) => !GATED_TOOLS.has(t));
 
+  const maxTurns = config.maxTurns[role] ?? spec.maxTurns ?? 40;
   const options: Record<string, unknown> = {
     cwd,
     model: args.model,
@@ -167,7 +197,7 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
         },
       ],
     },
-    maxTurns: spec.maxTurns ?? 40,
+    maxTurns,
     settingSources: [],
   };
   if (args.effort) options.effort = args.effort;
@@ -187,7 +217,10 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
   };
 
   const maxAttempts = Math.max(1, config.retry.maxAttempts);
+  const maxContinuations = Math.max(0, config.maxTurnContinuations);
   let attemptErr: unknown = null;
+  let prompt = userPrompt;
+  let continuations = 0;
 
   // Live usage for the in-flight SDK attempt, keyed by API message id. The
   // SDK's final `result` message is authoritative and replaces it.
@@ -202,11 +235,13 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
     assistantText.length = 0;
     liveUsage.clear();
     attemptErr = null;
+    metrics.resultSubtype = undefined;
 
-    // After a retry, resume whatever session id we captured on the aborted attempt.
-    if (attempt > 1 && capturedSessionId) {
+    // After a retry or a continuation, resume whatever session id we captured.
+    if ((attempt > 1 || continuations > 0) && capturedSessionId) {
       options.resume = capturedSessionId;
     }
+    if (args.maxBudgetUsd !== undefined) options.maxBudgetUsd = Math.max(0, args.maxBudgetUsd - metrics.costUsd);
 
     // A fresh controller per attempt, linked to the caller's signal, so abort
     // actually stops the SDK subprocess instead of just abandoning it.
@@ -219,7 +254,7 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
     options.abortController = sdkAbort;
 
     try {
-      const q = query({ prompt: userPrompt, options: options as never });
+      const q = query({ prompt, options: options as never });
       for await (const message of q as AsyncIterable<Record<string, unknown>>) {
         handleMessage(runId, role, message, {
           onSessionId: (id) => {
@@ -239,9 +274,43 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
       }
       if (signal?.aborted) throw new Error("aborted");
       attemptErr = null;
-      break;
     } catch (err) {
       attemptErr = signal?.aborted ? new Error("aborted") : err;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+
+    // The SDK reports a limit as an error `result` and then (in current
+    // versions) throws "Claude Code returned an error result: …". Either way
+    // the session is intact, so a turn limit is continued in the same session.
+    const limit = attemptErr && errMessage(attemptErr) === "aborted" ? undefined : limitFrom(metrics.resultSubtype, attemptErr);
+    if (limit === "max_turns" && capturedSessionId && continuations < maxContinuations) {
+      continuations++;
+      saveSessionId(runId, role, capturedSessionId);
+      log.warn("sdk.max_turns_continue", { runId, role, maxTurns, continuation: continuations, of: maxContinuations });
+      emit({
+        type: "role.message",
+        runId,
+        role,
+        subtype: "system",
+        text: `[orchestrator] ${spec.title} used its ${maxTurns} turns without finishing; continuing the same session (${continuations}/${maxContinuations}).`,
+      });
+      prompt = continuationPrompt(maxTurns, continuations, maxContinuations);
+      attempt--; // a continuation is not a retry
+      continue;
+    }
+    if (limit) {
+      if (capturedSessionId) saveSessionId(runId, role, capturedSessionId);
+      const what =
+        limit === "max_turns"
+          ? `used its ${maxTurns}-turn limit${continuations > 0 ? ` ${continuations + 1} times (${continuations} automatic continuation${continuations > 1 ? "s" : ""})` : ""} without finishing`
+          : "reached the run's cost budget before finishing";
+      log.warn("sdk.role_limit", { runId, role, limit, continuations });
+      throw new RoleRunError(`${spec.title} ${what}`, metrics, capturedSessionId, limit);
+    }
+    if (!attemptErr) break;
+
+    {
       const classification = classifyError(attemptErr);
       if (!classification.transient || attempt === maxAttempts) {
         log.error("sdk.run_failed", {
@@ -249,10 +318,11 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
           role,
           attempt,
           transient: classification.transient,
-          err: attemptErr instanceof Error ? attemptErr.message : String(attemptErr),
+          err: errMessage(attemptErr),
         });
         if (capturedSessionId) saveSessionId(runId, role, capturedSessionId);
-        throw attemptErr;
+        if (errMessage(attemptErr) === "aborted") throw attemptErr;
+        throw new RoleRunError(errMessage(attemptErr), metrics, capturedSessionId);
       }
       const wait = config.retry.initialDelayMs * Math.pow(2, attempt - 1);
       log.warn("sdk.retry", { runId, role, attempt, waitMs: wait, reason: classification.reason });
@@ -264,8 +334,6 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
         text: `[orchestrator] transient error on attempt ${attempt}/${maxAttempts}, retrying in ${wait}ms: ${classification.reason}`,
       });
       await delay(wait);
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -289,6 +357,21 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
     };
   }
   return { sessionId: capturedSessionId, output: normalizeRoleOutput(validated.data), metrics };
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Which limit (if any) ended the session, from the result subtype or the SDK's error text. */
+export function limitFrom(subtype: string | undefined, err: unknown): RoleLimit | undefined {
+  if (subtype === "error_max_turns") return "max_turns";
+  if (subtype === "error_max_budget_usd") return "max_budget";
+  if (!err) return undefined;
+  const msg = errMessage(err).toLowerCase();
+  if (/maximum number of turns|max[_ ]turns/.test(msg)) return "max_turns";
+  if (/max[_ ]budget|budget.*exceeded|exceeded.*budget/.test(msg)) return "max_budget";
+  return undefined;
 }
 
 function limitHint(subtype: string | undefined): string {

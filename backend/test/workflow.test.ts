@@ -61,7 +61,8 @@ const calls: Array<{
   env: Record<string, string>;
 }> = [];
 
-vi.mock("../src/sdk/runRole.js", () => ({
+vi.mock("../src/sdk/runRole.js", async (importOriginal) => ({
+  RoleRunError: (await importOriginal<typeof import("../src/sdk/runRole.js")>()).RoleRunError,
   runRoleAgent: vi.fn(async (args: RunRoleAgentArgs) => {
     const { loadRun } = await import("../src/orchestrator/runStore.js");
     const state = loadRun(args.runId)!.state;
@@ -448,6 +449,39 @@ describe("workflow state machine", () => {
     await workflow.startRun(runId);
     expect(await settle(runId, isGateOrEnd)).toBe("failed");
     expect(loadRun(runId)!.failureReason).toMatch(/not allowed to request/);
+  });
+
+  it("pauses (not fails) and keeps the attempt's cost when a role runs out of turns", async () => {
+    const runId = newRun();
+    const { RoleRunError } = await import("../src/sdk/runRole.js");
+    const metrics = { costUsd: 7, numTurns: 300, usage: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 } };
+    script = () => {
+      throw new RoleRunError("Analyst used its 30-turn limit without finishing", metrics, "sess-x", "max_turns");
+    };
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("paused");
+    const rec = loadRun(runId)!;
+    expect(rec.pauseReason).toMatch(/30-turn limit.*"Jump" to this role/);
+    expect(rec.roles.analyst![0]).toMatchObject({ status: "failed", costUsd: 7, numTurns: 300, sessionId: "sess-x" });
+  });
+
+  it("re-runs the RED phase when the Unit Tester is jumped to before RED finished", async () => {
+    const runId = newRun();
+    const { RoleRunError } = await import("../src/sdk/runRole.js");
+    const happy = happyScript(runId);
+    let cutOff = true;
+    script = (role, state, args) => {
+      if (role === "unitTester" && cutOff) {
+        cutOff = false;
+        throw new RoleRunError("Unit Tester used its 80-turn limit without finishing", { costUsd: 1, numTurns: 80, usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }, "s", "max_turns");
+      }
+      return happy(role, state, args);
+    };
+    await driveToReviewGate(runId); // ends right after the branch gate
+    expect(await settle(runId, isGateOrEnd)).toBe("paused");
+    await workflow.jumpToRole(runId, "unitTester");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_review_decision");
+    expect(calls.filter((c) => c.role === "unitTester").map((c) => c.state)).toEqual(["unit_tests_red_running", "unit_tests_red_running", "unit_tests_green_running"]);
   });
 
   it("pauses (not fails) when a role is blocked without a hand-off", async () => {

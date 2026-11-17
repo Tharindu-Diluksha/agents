@@ -3,18 +3,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Runs runRoleAgent / postJiraComment against a fake SDK message stream. */
 
 let messages: Array<Record<string, unknown>> = [];
+/** When set, each query() call takes the next stream; `throws` ends it with that error (as the SDK does after an error result). */
+let streams: Array<{ messages: Array<Record<string, unknown>>; throws?: string }> | null = null;
 const queryCalls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(({ prompt, options }: { prompt: string; options: Record<string, unknown> }) => {
-    queryCalls.push({ prompt, options });
+    queryCalls.push({ prompt, options: { ...options } });
+    const stream = streams ? streams.shift()! : { messages };
     return (async function* () {
-      for (const m of messages) yield m;
+      for (const m of stream.messages) yield m;
+      if (stream.throws) throw new Error(stream.throws);
     })();
   }),
 }));
 vi.mock("../src/orchestrator/sessionStore.js", () => ({ getSessionId: () => null, saveSessionId: () => undefined }));
 
-const { runRoleAgent } = await import("../src/sdk/runRole.js");
+const { runRoleAgent, RoleRunError, limitFrom } = await import("../src/sdk/runRole.js");
+const { config } = await import("../src/config.js");
 const { postJiraComment } = await import("../src/external/jiraMcp.js");
 const { subscribeAll } = await import("../src/events.js");
 const { roles } = await import("../src/roles/index.js");
@@ -32,6 +37,7 @@ const assistant = (id: string, u: ReturnType<typeof usage>, text?: string) => ({
 
 beforeEach(() => {
   queryCalls.length = 0;
+  streams = null;
 });
 
 describe("runRoleAgent token usage", () => {
@@ -93,6 +99,76 @@ describe("runRoleAgent token usage", () => {
     expect(opts.tools).toEqual(["Read", "Glob", "Grep", "Write", "Edit"]);
     expect(opts.allowedTools).toEqual(["Read", "Glob", "Grep", "mcp__jira__getJiraIssue"]);
     expect(opts.model).toBe("m");
+  });
+});
+
+describe("runRoleAgent turn limit", () => {
+  const MAX_TURNS_ERR = "Claude Code returned an error result: Reached maximum number of turns (100)";
+  const maxTurnsResult = (cost: number) => ({
+    type: "result",
+    subtype: "error_max_turns",
+    session_id: "sess-1",
+    total_cost_usd: cost,
+    num_turns: 100,
+    usage: usage(10, 5),
+  });
+  const args = () => ({
+    runId: "R",
+    role: "developer" as const,
+    spec: roles.developer,
+    systemPrompt: "s",
+    userPrompt: "do the task",
+    cwd: "/repo",
+    model: "m",
+    repoPaths: ["/repo"],
+    writeRoots: ["/repo"],
+    bashAllowList: roles.developer.bashAllowList,
+  });
+
+  it("resumes the same session with a continuation prompt and sums the metrics", async () => {
+    streams = [
+      { messages: [{ type: "system", subtype: "init", session_id: "sess-1" }, maxTurnsResult(1)], throws: MAX_TURNS_ERR },
+      {
+        messages: [
+          assistant("msg_9", usage(1, 1), '```json\n{"status":"done","artifacts":[],"approvalRequest":null,"handoff":null}\n```'),
+          { type: "result", subtype: "success", session_id: "sess-1", total_cost_usd: 0.5, num_turns: 7, usage: usage(10, 5) },
+        ],
+      },
+    ];
+    const res = await runRoleAgent(args());
+    expect(res.output?.status).toBe("done");
+    expect(res.metrics).toMatchObject({ costUsd: 1.5, numTurns: 107, resultSubtype: "success" });
+    expect(queryCalls).toHaveLength(2);
+    expect(queryCalls[0]!.prompt).toBe("do the task");
+    expect(queryCalls[1]!.options.resume).toBe("sess-1");
+    expect(queryCalls[1]!.prompt).toMatch(/turn limit \(100 turns\)/);
+  });
+
+  it("throws a RoleRunError with limit and metrics once continuations are used up", async () => {
+    const n = config.maxTurnContinuations;
+    streams = Array.from({ length: n + 1 }, () => ({ messages: [maxTurnsResult(2)], throws: MAX_TURNS_ERR }));
+    const err = await runRoleAgent(args()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RoleRunError);
+    expect((err as InstanceType<typeof RoleRunError>).limit).toBe("max_turns");
+    expect((err as InstanceType<typeof RoleRunError>).metrics.costUsd).toBe(2 * (n + 1));
+    expect((err as InstanceType<typeof RoleRunError>).sessionId).toBe("sess-1");
+    expect(queryCalls).toHaveLength(n + 1);
+  });
+
+  it("keeps the metrics of a session that failed for another reason", async () => {
+    streams = [{ messages: [{ type: "result", subtype: "error_during_execution", session_id: "s", total_cost_usd: 3, num_turns: 4, usage: usage(1, 1) }], throws: "boom" }];
+    const err = await runRoleAgent(args()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RoleRunError);
+    expect((err as InstanceType<typeof RoleRunError>).limit).toBeUndefined();
+    expect((err as InstanceType<typeof RoleRunError>).metrics.costUsd).toBe(3);
+  });
+
+  it("limitFrom recognises the result subtype and the SDK error text", () => {
+    expect(limitFrom("error_max_turns", null)).toBe("max_turns");
+    expect(limitFrom("error_max_budget_usd", null)).toBe("max_budget");
+    expect(limitFrom(undefined, new Error(MAX_TURNS_ERR))).toBe("max_turns");
+    expect(limitFrom("success", null)).toBeUndefined();
+    expect(limitFrom(undefined, new Error("ECONNRESET"))).toBeUndefined();
   });
 });
 
