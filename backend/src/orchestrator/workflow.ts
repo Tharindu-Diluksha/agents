@@ -20,8 +20,8 @@ import { refreshOverlaps } from "./overlaps.js";
 import { syncWithBase } from "../external/git.js";
 import { prepareWorkspaces, removeWorkspaces, setFeatureBranch, usesWorktrees, workDir, type RemoveResult } from "./workspaces.js";
 import { proposeBranches, readProposedBranches, writeProposedBranches, type BranchProposal } from "./branches.js";
-import { archiveDir, forgetRun, latestAttempt, loadRun, saveRun, startAttempt, totalCostUsd, transition } from "./runStore.js";
-import type { ApprovalAction, PendingApproval, RoleAttempt, RoleId, RoleOutput, RunRecord, RunState } from "./types.js";
+import { archiveDir, forgetRun, latestAttempt, loadRun, roleEnabled, saveRun, startAttempt, totalCostUsd, transition } from "./runStore.js";
+import type { ApprovalAction, EffortLevel, PendingApproval, RoleAttempt, RoleId, RoleOutput, RunRecord, RunState } from "./types.js";
 
 /*
  * Pipeline:
@@ -84,12 +84,55 @@ export async function resumeAfterApproval(
  */
 export async function jumpToRole(runId: string, role: RoleId): Promise<void> {
   const record = mustLoad(runId);
+  if (!roleEnabled(record, role)) throw new Error(`${roleRegistry[role].title} is turned off for this run`);
   stopInFlight(runId);
   clearApproval(record);
   record.fixIterations = 0;
   record.pauseReason = undefined;
   record.failureReason = undefined;
   startRole(record, role, `jump to ${role}`, {}, { ignoreBudget: true });
+}
+
+/**
+ * Changes the model and/or effort a role uses from its next attempt on (a
+ * re-run, fix loop or jump). `null` clears the run's override, so the server
+ * default applies; `undefined` leaves that setting alone. Refused while the
+ * role is running or queued, since the session already started with the old
+ * values. A resumed SDK session keeps its history under the new model.
+ */
+export function setRoleSettings(
+  runId: string,
+  role: RoleId,
+  settings: { model?: string | null; effort?: EffortLevel | null },
+): { model: string; effort: EffortLevel | null } {
+  const record = mustLoad(runId);
+  if (!roleEnabled(record, role)) throw new Error(`${roleRegistry[role].title} is turned off for this run`);
+  const status = latestAttempt(record, role)?.status;
+  if (status === "running" || status === "queued") {
+    throw new Error(`${roleRegistry[role].title} is ${status}; change its settings once it has stopped`);
+  }
+
+  if (settings.model !== undefined) {
+    const model = settings.model?.trim() || null;
+    const models = { ...record.models };
+    if (model) models[role] = model;
+    else delete models[role];
+    record.models = Object.keys(models).length > 0 ? models : undefined;
+  }
+  if (settings.effort !== undefined) {
+    const efforts = { ...record.efforts };
+    if (settings.effort) efforts[role] = settings.effort;
+    else delete efforts[role];
+    record.efforts = Object.keys(efforts).length > 0 ? efforts : undefined;
+  }
+  saveRun(record);
+
+  const model = record.models?.[role] || config.models[role];
+  const effort = record.efforts?.[role] ?? config.efforts[role];
+  emit({ type: "role.settings", runId, role, model: record.models?.[role] ?? null, effort: record.efforts?.[role] ?? null });
+  systemMessage(record, role, `next attempt uses model ${model}, effort ${effort ?? "model default"}`);
+  log.info("workflow.role_settings", { runId, role, model, effort });
+  return { model, effort };
 }
 
 export async function skipCurrent(runId: string): Promise<void> {
@@ -299,6 +342,27 @@ export function nextAfterDone(state: RunState): RunState | "plan_gate" | "comple
   }
 }
 
+/**
+ * The first state at or after `state` whose role runs in this run: states of
+ * roles turned off at launch are passed over as if they had reported `done`.
+ * "complete" when nothing enabled is left (e.g. no E2E Tester and no PR Creator
+ * after the review). States without a role (gates) are returned as is.
+ */
+export function enabledStateFrom(record: RunRecord, state: RunState): { state: RunState | "complete"; skipped: RoleId[] } {
+  const skipped: RoleId[] = [];
+  let s: RunState = state;
+  for (;;) {
+    const role = roleForState(s);
+    if (!role || roleEnabled(record, role)) return { state: s, skipped };
+    if (!skipped.includes(role)) skipped.push(role);
+    const next = nextAfterDone(s);
+    if (next === "complete") return { state: "complete", skipped };
+    // Required roles are never disabled, so the plan gate (Developer) can't be passed over.
+    if (!next || next === "plan_gate") return { state: s, skipped };
+    s = next;
+  }
+}
+
 export function nextAfterSkip(state: RunState): RunState | null {
   switch (state) {
     case "awaiting_feature_doc_approval":
@@ -339,12 +403,29 @@ function startRole(
   ctx: RoleInputCtx = {},
   opts: { ignoreBudget?: boolean } = {},
 ): void {
-  const role = (roleOrState in roleRegistry ? roleOrState : roleForState(roleOrState as RunState)) as RoleId | null;
+  let role: RoleId | null;
+  let state: RunState;
+  if (roleOrState in roleRegistry) {
+    // An explicit role (jump, hand-off): callers only pass enabled ones.
+    role = roleOrState as RoleId;
+    state = runningStateFor(record, role);
+  } else {
+    // A pipeline step: pass over the roles turned off for this run.
+    const resolved = enabledStateFrom(record, roleOrState as RunState);
+    const note = resolved.skipped.length > 0 ? ` (turned off: ${resolved.skipped.map((r) => roleRegistry[r].title).join(", ")})` : "";
+    if (resolved.state === "complete") {
+      goTo(record, "done", `${reason}; workflow complete${note}`);
+      void refreshOverlaps(record);
+      return;
+    }
+    state = resolved.state;
+    role = roleForState(state);
+    reason += note;
+  }
   if (!role) {
     fail(record, `no role runs in state ${roleOrState}`);
     return;
   }
-  const state = roleOrState in roleRegistry ? runningStateFor(record, role) : (roleOrState as RunState);
   goTo(record, state, reason);
   if (role === "prCreator" && usesWorktrees(record) && config.syncBaseBeforePr) {
     void syncThenStartPrCreator(record, ctx, opts);
@@ -667,8 +748,10 @@ async function runRoleAsync(
   }
 
   const model = record.models?.[role] || config.models[role];
+  const effort = record.efforts?.[role] ?? config.efforts[role] ?? undefined;
   const attempt = startAttempt(record, role);
   attempt.model = model;
+  if (effort) attempt.effort = effort;
   attempt.status = "queued";
   // Kept so the UI can show what the user sent while this attempt works on it.
   if (ctx.feedback?.trim()) attempt.feedback = ctx.feedback.trim();
@@ -702,6 +785,7 @@ async function runRoleAsync(
       userPrompt: spec.buildInput(record, ctx),
       cwd: spec.cwdFor(record),
       model,
+      effort,
       repoPaths: record.repos.map(workDir),
       writeRoots: writeRootsFor(record, spec.writeScopeFor?.(record) ?? spec.writeScope),
       bashAllowList: bashAllowListFor(spec, record),
@@ -805,7 +889,16 @@ export function writeRootsFor(record: RunRecord, scope: "run" | "repos-and-run")
 async function handleRoleOutput(record: RunRecord, role: RoleId, output: RoleOutput): Promise<void> {
   if (output.status === "blocked") {
     if (output.handoff && output.handoff.nextRole !== role) {
-      const target = output.handoff.nextRole;
+      let target = output.handoff.nextRole;
+      if (!roleEnabled(record, target)) {
+        // The role asked for is turned off for this run; the Developer (always on) takes the work.
+        if (role === "developer") {
+          pause(record, `Developer handed back to ${roleRegistry[target].title}, which is turned off for this run: ${output.handoff.notes ?? "see the role stream"}`);
+          return;
+        }
+        systemMessage(record, role, `${roleRegistry[target].title} is turned off for this run; handing back to the Developer instead`);
+        target = "developer";
+      }
       // Handing work back to the Developer or Unit Tester is a fix loop.
       if ((target === "developer" || target === "unitTester") && !admitFixLoop(record, `${role} handed back to ${target}`)) return;
       startRole(record, target, `handoff from ${role}${output.handoff.notes ? `: ${output.handoff.notes}` : ""}`, {

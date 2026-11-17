@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { EFFORT_LEVELS, type EffortLevel } from "./orchestrator/types.js";
 
 loadDotenv({ path: resolve(process.cwd(), ".env") });
 loadDotenv({ path: resolve(process.cwd(), "../.env") });
@@ -12,6 +13,15 @@ const DEFAULT_MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
 /** `CLAUDE_MODEL_<ROLE>` overrides `CLAUDE_MODEL` for one role. */
 function roleModel(envSuffix: string): string {
   return process.env[`CLAUDE_MODEL_${envSuffix}`] || DEFAULT_MODEL;
+}
+
+/**
+ * `CLAUDE_EFFORT_<ROLE>` overrides `CLAUDE_EFFORT` for one role. Unset or not a
+ * known level = null (the model's own default effort).
+ */
+function roleEffort(envSuffix: string): EffortLevel | null {
+  const raw = (process.env[`CLAUDE_EFFORT_${envSuffix}`] || process.env.CLAUDE_EFFORT || "").trim().toLowerCase();
+  return (EFFORT_LEVELS as readonly string[]).includes(raw) ? (raw as EffortLevel) : null;
 }
 
 function num(name: string, fallback: number): number {
@@ -59,6 +69,31 @@ export const config = {
     e2eTester: roleModel("E2E_TESTER"),
     prCreator: roleModel("PR_CREATOR"),
   },
+  /** Reasoning effort per role (`CLAUDE_EFFORT`, `CLAUDE_EFFORT_<ROLE>`); null = the model's default. Per-run overrides take precedence. */
+  efforts: {
+    analyst: roleEffort("ANALYST"),
+    developer: roleEffort("DEVELOPER"),
+    unitTester: roleEffort("UNIT_TESTER"),
+    integrationTester: roleEffort("INTEGRATION_TESTER"),
+    reviewer: roleEffort("REVIEWER"),
+    e2eTester: roleEffort("E2E_TESTER"),
+    prCreator: roleEffort("PR_CREATOR"),
+  },
+  /**
+   * Models offered in the launch dialog's per-role dropdowns (`CLAUDE_MODEL_OPTIONS`,
+   * comma-separated). The configured defaults are always included; any other id
+   * can still be typed via "Custom…".
+   */
+  modelOptions: [
+    ...new Set([
+      ...(process.env.CLAUDE_MODEL_OPTIONS ?? "claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5,claude-fable-5-2")
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
+      DEFAULT_MODEL,
+      ...["ANALYST", "DEVELOPER", "UNIT_TESTER", "INTEGRATION_TESTER", "REVIEWER", "E2E_TESTER", "PR_CREATOR"].map(roleModel),
+    ]),
+  ],
   /** Fix loops (review rejection, tester → Developer hand-back) allowed before the run pauses. 0 = unlimited. */
   maxFixIterations: num("MAX_FIX_ITERATIONS", 5),
   /** Total USD a run may spend before it pauses. 0 = unlimited. */

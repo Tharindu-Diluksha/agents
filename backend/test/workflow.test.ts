@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { RoleOutput, RunState } from "../src/orchestrator/types.js";
+import type { RoleId, RoleOutput, RunState } from "../src/orchestrator/types.js";
 import type { RunRoleAgentArgs, RunRoleAgentResult } from "../src/sdk/runRole.js";
 
 // These tests drive real git (worktrees, merges). Spawning git is much slower on
@@ -52,6 +52,7 @@ const calls: Array<{
   state: RunState;
   prompt: string;
   model: string;
+  effort?: string;
   extraTools: string[];
   mcpServers: string[];
   cwd: string;
@@ -74,6 +75,7 @@ vi.mock("../src/sdk/runRole.js", () => ({
       state,
       prompt: args.userPrompt,
       model: args.model,
+      effort: args.effort,
       extraTools: args.extraTools ?? [],
       mcpServers: Object.keys(args.mcpServers ?? {}),
     });
@@ -145,7 +147,13 @@ function happyScript(runId: string): Script {
 }
 
 let seq = 0;
-function newRun(models?: Record<string, string>, jira = false, label?: string, workspace?: "worktree" | "in-place"): string {
+function newRun(
+  models?: Record<string, string>,
+  jira = false,
+  label?: string,
+  workspace?: "worktree" | "in-place",
+  disabledRoles?: RoleId[],
+): string {
   const runId = `RUN-${++seq}`;
   createRun({
     runId,
@@ -156,6 +164,7 @@ function newRun(models?: Record<string, string>, jira = false, label?: string, w
     repos: [{ path: repoPath, baseBranch: "main", aiGuidelinePath: null }],
     models,
     workspace,
+    disabledRoles,
   });
   return runId;
 }
@@ -234,6 +243,103 @@ describe("workflow state machine", () => {
     const rec = loadRun(runId)!;
     expect(rec.roles.analyst![0]!.costUsd).toBe(0.5);
     expect(rec.roles.unitTester).toHaveLength(2);
+  });
+
+  it("passes the per-run effort to the role session and records it", async () => {
+    const runId = newRun();
+    loadRun(runId)!.efforts = { analyst: "xhigh" };
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_plan_approval");
+
+    expect(calls.find((c) => c.role === "analyst")!.effort).toBe("xhigh");
+    // No override and no CLAUDE_EFFORT_* default: the model's own default (option omitted).
+    expect(calls.find((c) => c.role === "developer")!.effort).toBe(config.efforts.developer ?? undefined);
+    const rec = loadRun(runId)!;
+    expect(rec.roles.analyst![0]!.effort).toBe("xhigh");
+  });
+
+  it("changes a stopped role's model and effort for its next attempt, but not while it runs", async () => {
+    const runId = newRun(undefined, false, undefined, undefined, ["e2eTester"]);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    script = async (role, state, args) => {
+      if (role === "analyst") await held;
+      return happyScript(runId)(role, state, args);
+    };
+    await workflow.startRun(runId);
+    await settle(runId, () => loadRun(runId)!.roles.analyst?.at(-1)?.status === "running");
+    expect(() => workflow.setRoleSettings(runId, "analyst", { model: "claude-haiku-5-5" })).toThrow(/running/);
+    expect(() => workflow.setRoleSettings(runId, "e2eTester", { effort: "low" })).toThrow(/turned off/);
+    release();
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+
+    // Rejecting the feature doc re-runs the Analyst with the new settings.
+    expect(workflow.setRoleSettings(runId, "analyst", { model: "claude-haiku-5-5", effort: "max" })).toEqual({
+      model: "claude-haiku-5-5",
+      effort: "max",
+    });
+    await workflow.resumeAfterApproval(runId, "reject", undefined, "more detail");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    const analystCalls = calls.filter((c) => c.role === "analyst");
+    expect(analystCalls.map((c) => [c.model, c.effort])).toEqual([
+      [config.models.analyst, config.efforts.analyst ?? undefined],
+      ["claude-haiku-5-5", "max"],
+    ]);
+
+    // null clears the override again; an untouched setting stays.
+    workflow.setRoleSettings(runId, "analyst", { model: null });
+    const rec = loadRun(runId)!;
+    expect(rec.models).toBeUndefined();
+    expect(rec.efforts).toEqual({ analyst: "max" });
+  });
+
+  it("skips the roles turned off at launch", async () => {
+    const runId = newRun(undefined, false, undefined, undefined, ["unitTester", "integrationTester", "e2eTester", "prCreator"]);
+    script = happyScript(runId);
+    await driveToReviewGate(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_review_decision");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("done");
+
+    expect(calls.map((c) => `${c.role}@${c.state}`)).toEqual([
+      "analyst@analyst_running",
+      "developer@developer_planning",
+      "developer@developer_implementing",
+      "reviewer@reviewer_running",
+    ]);
+    expect(createPr).not.toHaveBeenCalled();
+    // The Developer writes the unit tests itself, and every role knows who is off.
+    const impl = calls.find((c) => c.state === "developer_implementing")!.prompt;
+    expect(impl).toContain("no Unit Tester in this run");
+    expect(impl).toContain("sends your change to the Code Reviewer.");
+    expect(calls[0]!.prompt).toContain("Roles turned off for this run:** Unit Tester, Integration Tester, E2E Tester, PR Creator");
+    const rec = loadRun(runId)!;
+    expect(rec.stateHistory.at(-1)!.reason).toMatch(/turned off: E2E Tester, PR Creator/);
+  });
+
+  it("redirects a hand-back to a turned-off role to the Developer", async () => {
+    const runId = newRun(undefined, false, undefined, undefined, ["unitTester"]);
+    const base = happyScript(runId);
+    let reviews = 0;
+    script = (role, state, args) =>
+      role === "reviewer" && reviews++ === 0
+        ? out({ status: "blocked", handoff: { nextRole: "unitTester", notes: "missing tests" } })
+        : base(role, state, args);
+    await driveToReviewGate(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_review_decision");
+    expect(calls.slice(2).map((c) => `${c.role}@${c.state}`)).toEqual([
+      "developer@developer_implementing",
+      "integrationTester@integration_tester_running",
+      "reviewer@reviewer_running",
+      "developer@developer_implementing",
+      "integrationTester@integration_tester_running",
+      "reviewer@reviewer_running",
+    ]);
+    expect(loadRun(runId)!.fixIterations).toBe(1);
+    await expect(workflow.jumpToRole(runId, "unitTester")).rejects.toThrow(/turned off/);
   });
 
   it("sends tester app-bugs back to the Developer and re-verifies", async () => {

@@ -30,7 +30,14 @@ Each role can run on its own model:
 
 - `CLAUDE_MODEL` — default for every role.
 - `CLAUDE_MODEL_<ROLE>` — per-role default (`ANALYST`, `DEVELOPER`, `UNIT_TESTER`, `INTEGRATION_TESTER`, `REVIEWER`, `E2E_TESTER`, `PR_CREATOR`).
-- Launch dialog → "Models per role" — overrides for a single run.
+- `CLAUDE_EFFORT` / `CLAUDE_EFFORT_<ROLE>` — default reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`); unset = the model's own default.
+- Launch dialog → "Agents, models and effort" — a model dropdown (options from `CLAUDE_MODEL_OPTIONS`, plus "Custom…" for any other id) and an effort dropdown per role, for a single run.
+
+The same section lets you leave optional agents out of a run: Unit Tester, Integration Tester, E2E Tester and PR Creator can be unticked; Analyst, Developer and Reviewer always run. Without the Unit Tester the Developer writes the unit tests itself; without the PR Creator the run ends after the last enabled role with the work on a local branch.
+
+## Extra context and mockups
+
+The launch dialog takes extra notes and images (PNG, JPEG, GIF or WebP, up to 5 MB each; pick, paste or drop them), e.g. UI mockups that aren't attached to the JIRA ticket. You can add more later on the run page's Analyst tab. They're stored in `runs/<runId>/attachments/`, and every agent's prompt lists them, with the notes inline and the image paths for the agent to open. An agent sees additions from its next run; at the feature-doc gate, add them and reject the doc to have the Analyst work them in.
 
 ## Running several features in parallel
 

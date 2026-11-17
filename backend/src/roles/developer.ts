@@ -1,5 +1,7 @@
 import type { RunRecord } from "../orchestrator/types.js";
+import { roleEnabled } from "../orchestrator/runStore.js";
 import {  aiGuidelineSection,
+  ROLE_TITLES,
   artifactRelative,
   BASH,
   endOfTurnExample,
@@ -50,6 +52,11 @@ export const developer: RoleSpec = {
     const adrPath = artifactRelative(record, "developer", "adr.md");
     const planPath = artifactRelative(record, "developer", "impl-plan.md");
     const planning = record.state === "developer_planning";
+    const unitTester = roleEnabled(record, "unitTester");
+    // Who checks the change after the Developer, in pipeline order.
+    const verifiers = (["unitTester", "integrationTester", "reviewer"] as const)
+      .filter((r) => roleEnabled(record, r))
+      .map((r) => (r === "unitTester" ? "the Unit Tester for verification" : `the ${ROLE_TITLES[r]}`));
 
     const lines = [
       headerFor(record, "Developer"),
@@ -61,7 +68,7 @@ export const developer: RoleSpec = {
       lines.push(
         "1. Confirm existing tests pass: run the repo's unit test command. If anything is red before you touch the code, emit `status: \"blocked\"` describing which tests failed. Do NOT proceed.",
         `2. Write an ADR to \`${adrPath}\` using \`templates/adr.md\`.`,
-        `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. List every file to touch, and fill in the **Test plan** section: the unit tests (per AC-id) the Unit Tester will write first, and the integration points the Integration Tester should cover.`,
+        `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. List every file to touch, and fill in the **Test plan** section: the unit tests (per AC-id) ${unitTester ? "the Unit Tester will write first" : "you will write first (there is no Unit Tester in this run)"}${roleEnabled(record, "integrationTester") ? ", and the integration points the Integration Tester should cover" : ""}.`,
         "4. End your turn with `approvalRequest.action: \"proceed_to_next\"` so the user can approve the plan. Do NOT implement in this phase.",
         "",
         "## Required reading",
@@ -69,12 +76,21 @@ export const developer: RoleSpec = {
       );
     } else {
       lines.push(
-        "The orchestrator has created the feature branch and the **Unit Tester has already written failing unit tests** from your plan (see the unit test report below). Your job is to make them pass.",
-        "",
-        "1. Implement the plan. Run the unit tests often; the goal is a fully green suite.",
-        "2. Do NOT delete, skip, or weaken the Unit Tester's tests to get green. If you are convinced a test contradicts the feature doc or the approved plan, stop and emit `status: \"blocked\"` with `handoff: { \"nextRole\": \"unitTester\", \"notes\": \"<which test and why>\" }`.",
+        ...(unitTester
+          ? [
+              "The orchestrator has created the feature branch and the **Unit Tester has already written failing unit tests** from your plan (see the unit test report below). Your job is to make them pass.",
+              "",
+              "1. Implement the plan. Run the unit tests often; the goal is a fully green suite.",
+              "2. Do NOT delete, skip, or weaken the Unit Tester's tests to get green. If you are convinced a test contradicts the feature doc or the approved plan, stop and emit `status: \"blocked\"` with `handoff: { \"nextRole\": \"unitTester\", \"notes\": \"<which test and why>\" }`.",
+            ]
+          : [
+              "The orchestrator has created the feature branch. **There is no Unit Tester in this run**, so the unit tests are yours: ignore any instruction about the Unit Tester's tests.",
+              "",
+              "1. Work test-first: write the unit tests from the plan's **Test plan** (per AC-id), see them fail, then implement until they pass. Follow the repo's existing test conventions.",
+              "2. Don't delete, skip or weaken existing tests to get green.",
+            ]),
         "3. Commit incrementally with meaningful messages. DO NOT push.",
-        "4. When done, run the full unit suite plus typecheck/lint once more and emit `status: \"done\"`. The orchestrator then sends your change to the Unit Tester for verification, then the Integration Tester, then the Reviewer.",
+        `4. When done, run the full unit suite plus typecheck/lint once more and emit \`status: "done"\`. The orchestrator then sends your change to ${verifiers.join(", then ")}.`,
         "",
         "If a review report or a test report that classifies an **app-bug** is attached below, it is the reason you are being re-run: fix exactly what it describes.",
         "",

@@ -15,6 +15,8 @@ export interface AttemptRow {
   /** Run state the attempt started in, e.g. unit_tests_red_running. */
   phase: string;
   model: string;
+  /** Reasoning effort; empty = the model's default. */
+  effort: string;
   status: RoleAttempt["status"];
   startedAt: string;
   endedAt: string;
@@ -92,6 +94,7 @@ export function attemptRows(records: Archivable[]): AttemptRow[] {
           attempt: i + 1,
           phase: a.state ?? "",
           model: a.model ?? "",
+          effort: a.effort ?? "",
           status: a.status,
           startedAt: a.startedAt,
           endedAt: a.endedAt ?? "",
@@ -231,6 +234,7 @@ export const ATTEMPT_COLUMNS: Array<keyof AttemptRow & string> = [
   "attempt",
   "phase",
   "model",
+  "effort",
   "status",
   "startedAt",
   "endedAt",

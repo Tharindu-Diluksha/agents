@@ -11,9 +11,16 @@ import { listArtifactsForRun } from "../orchestrator/artifacts.js";
 import { testJiraMcp } from "../external/jiraMcp.js";
 import { describeJiraMcp } from "../external/jiraMcpConfig.js";
 import { detectProjects, projectsFor, STACK_IDS, STACKS } from "../stacks.js";
-import { createRun, listArchivedRuns, listRuns, loadRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
+import { createRun, listArchivedRuns, listRuns, loadRun, saveRun, totalCostUsd, usageTotals } from "../orchestrator/runStore.js";
+import {
+  addAttachments,
+  attachmentFile,
+  checkContext,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES_PER_REQUEST,
+} from "../orchestrator/attachments.js";
 import { ATTEMPT_COLUMNS, attemptRows, computeAnalytics, runRows, toCsv } from "../orchestrator/analytics.js";
-import { ROLES, type RoleId } from "../orchestrator/types.js";
+import { EFFORT_LEVELS, REQUIRED_ROLES, ROLES, type RoleId } from "../orchestrator/types.js";
 import {
   abortRun,
   jumpToRole,
@@ -21,6 +28,7 @@ import {
   removeRunWorkspaces,
   resumeAfterApproval,
   roleSlots,
+  setRoleSettings,
   skipCurrent,
   startRun,
 } from "../orchestrator/workflow.js";
@@ -52,11 +60,41 @@ const ModelsBody = z
   .partial()
   .optional();
 
+const ContextBody = z.object({
+  note: z.string().optional(),
+  images: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(200),
+        mediaType: z.string(),
+        data: z.string().min(1),
+        caption: z.string().max(500).optional(),
+      }),
+    )
+    .optional(),
+});
+
+/** Up to MAX_IMAGES_PER_REQUEST images of MAX_IMAGE_BYTES, base64 (+33%), plus the rest of the body. */
+const CONTEXT_BODY_LIMIT = Math.ceil((MAX_IMAGES_PER_REQUEST * MAX_IMAGE_BYTES * 4) / 3) + 1024 * 1024;
+
+const EffortsBody = z.partialRecord(z.enum(ROLES), z.enum(EFFORT_LEVELS)).optional();
+
 const LaunchBody = z.object({
   source: z.discriminatedUnion("kind", [JiraSourceBody, ManualSourceBody]),
   repos: z.array(RepoBody).min(1),
   /** Per-role model overrides for this run; blank/missing roles use the server defaults. */
   models: ModelsBody,
+  /** Per-role reasoning effort for this run; missing roles use the server default (or the model's). */
+  efforts: EffortsBody,
+  /** Optional roles to turn off for this run. Analyst, Developer and Reviewer can't be turned off. */
+  disabledRoles: z
+    .array(z.enum(ROLES))
+    .optional()
+    .refine((roles) => !roles?.some((r) => REQUIRED_ROLES.includes(r)), {
+      message: `${REQUIRED_ROLES.join(", ")} are required and can't be turned off`,
+    }),
+  /** Extra notes and images (e.g. mockups not in JIRA) every role can see. */
+  context: ContextBody.optional(),
   /** `worktree` (default): isolated worktree per repo. `in-place`: a new branch in the user's checkout. */
   workspace: z.enum(["worktree", "in-place"]).optional(),
 });
@@ -70,6 +108,12 @@ const ApproveBody = z.object({
 const RemoveWorkspacesBody = z.object({
   /** Discard uncommitted changes in the worktrees. */
   force: z.boolean().default(false),
+});
+
+/** null = back to the server default; a missing key leaves that setting as it is. */
+const RoleSettingsBody = z.object({
+  model: z.string().trim().max(200).nullable().optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
 });
 
 const JumpBody = z.object({
@@ -93,7 +137,11 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
   /** Server-side defaults the UI shows (model per role, limits). */
   app.get("/api/config", async () => ({
     roles: ROLES,
+    requiredRoles: REQUIRED_ROLES,
     models: config.models,
+    modelOptions: config.modelOptions,
+    efforts: config.efforts,
+    effortLevels: EFFORT_LEVELS,
     maxFixIterations: config.maxFixIterations,
     maxRunCostUsd: config.maxRunCostUsd,
     reviewAutoRoute: config.reviewAutoRoute,
@@ -126,11 +174,21 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
   /** Connects to the configured JIRA MCP server and reports status and tools. */
   app.post("/api/jira/test", async () => testJiraMcp());
 
-  app.post("/api/runs", async (req, reply) => {
+  app.post("/api/runs", { bodyLimit: CONTEXT_BODY_LIMIT }, async (req, reply) => {
     const parsed = LaunchBody.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
       return;
+    }
+    const context = parsed.data.context;
+    const hasContext = Boolean(context?.note?.trim() || context?.images?.length);
+    if (hasContext) {
+      try {
+        checkContext(context!);
+      } catch (err) {
+        reply.code(400).send({ error: "invalid_context", detail: errMsg(err) });
+        return;
+      }
     }
     const missing = parsed.data.repos.find((r) => !existsSync(r.path));
     if (missing) {
@@ -206,9 +264,15 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       source,
       repos,
       models: Object.keys(models).length > 0 ? models : undefined,
+      efforts: parsed.data.efforts && Object.keys(parsed.data.efforts).length > 0 ? parsed.data.efforts : undefined,
+      disabledRoles: [...new Set(parsed.data.disabledRoles ?? [])],
       workspace,
     });
 
+    if (hasContext) {
+      addAttachments(record, context!); // already validated above
+      saveRun(record);
+    }
     emit({ type: "run.created", runId, label, repoPaths: repos.map((r) => r.path) });
     try {
       await startRun(runId);
@@ -248,6 +312,8 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       totalCostUsd: totalCostUsd(record),
       totalUsage: usageTotals(record),
       effectiveModels: Object.fromEntries(ROLES.map((r) => [r, record.models?.[r] || config.models[r]])),
+      /** null = the model's default effort. */
+      effectiveEfforts: Object.fromEntries(ROLES.map((r) => [r, record.efforts?.[r] ?? config.efforts[r]])),
       artifacts: listArtifactsForRun(record).map((a) => ({ owner: a.owner, name: a.name, relative: a.relative })),
     };
   });
@@ -308,6 +374,69 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       reply.send({ ok: true });
     } catch (err) {
       reply.code(400).send({ error: "jump_failed", detail: errMsg(err) });
+    }
+  });
+
+  /**
+   * Adds notes / images to a run's context. Roles see them from their next
+   * attempt on (e.g. reject the feature doc to have the Analyst use them).
+   */
+  app.post<{ Params: { id: string } }>("/api/runs/:id/attachments", { bodyLimit: CONTEXT_BODY_LIMIT }, async (req, reply) => {
+    const record = loadRun(req.params.id);
+    if (!record) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    if (record.state === "done") {
+      reply.code(409).send({ error: "run_finished", detail: "the run is done; no role will read new context" });
+      return;
+    }
+    const parsed = ContextBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const added = addAttachments(record, parsed.data);
+      saveRun(record);
+      emit({ type: "run.attachments", runId: record.runId, added: added.length });
+      reply.send({ attachments: added });
+    } catch (err) {
+      reply.code(400).send({ error: "invalid_context", detail: errMsg(err) });
+    }
+  });
+
+  /** One of the run's images (for thumbnails in the UI). */
+  app.get<{ Params: { id: string; file: string } }>("/api/runs/:id/attachments/:file", async (req, reply) => {
+    const record = loadRun(req.params.id);
+    const found = record ? attachmentFile(record, req.params.file) : null;
+    if (!found) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    reply
+      .header("content-type", found.mediaType)
+      .header("x-content-type-options", "nosniff")
+      .header("cache-control", "private, max-age=86400")
+      .send(readFileSync(found.path));
+  });
+
+  /** Model / effort for a role's next attempt. Refused while that role is running or queued. */
+  app.put<{ Params: { id: string; role: string } }>("/api/runs/:id/roles/:role/settings", async (req, reply) => {
+    const role = z.enum(ROLES).safeParse(req.params.role);
+    const parsed = RoleSettingsBody.safeParse(req.body ?? {});
+    if (!role.success || !parsed.success) {
+      reply.code(400).send({ error: "invalid_body", detail: role.success ? parsed.error?.flatten() : `unknown role ${req.params.role}` });
+      return;
+    }
+    if (!loadRun(req.params.id)) {
+      reply.code(404).send({ error: "not_found" });
+      return;
+    }
+    try {
+      reply.send(setRoleSettings(req.params.id, role.data, parsed.data));
+    } catch (err) {
+      reply.code(409).send({ error: "settings_rejected", detail: errMsg(err) });
     }
   });
 

@@ -9,6 +9,24 @@ export const ROLES = [
 ] as const;
 export type RoleId = (typeof ROLES)[number];
 
+/** Reasoning effort levels (Agent SDK `effort`). */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/** Roles every run includes (mirrors the backend; the server's /api/config value wins). */
+export const REQUIRED_ROLES: readonly RoleId[] = ["analyst", "developer", "reviewer"];
+
+/** What each role does, for the launch dialog. */
+export const ROLE_HINTS: Record<RoleId, string> = {
+  analyst: "Turns the ticket or description into a feature doc",
+  developer: "Plans, then implements the change",
+  unitTester: "Writes failing unit tests first, then verifies them (without it the Developer writes the tests)",
+  integrationTester: "Tests the change across module / service boundaries",
+  reviewer: "Reviews the diff and can send it back for fixes",
+  e2eTester: "Runs end-to-end tests against the running app",
+  prCreator: "Writes the PR description and opens the PR after approval (without it the run ends with a local branch)",
+};
+
 export const ROLE_LABELS: Record<RoleId, string> = {
   analyst: "Analyst",
   developer: "Developer",
@@ -161,6 +179,7 @@ export interface RoleAttempt {
   sessionId?: string;
   errorMessage?: string;
   model?: string;
+  effort?: EffortLevel;
   costUsd?: number;
   numTurns?: number;
   usage?: AttemptUsage;
@@ -174,11 +193,42 @@ export interface RunDetail extends RunSummary {
   roles: Partial<Record<RoleId, RoleAttempt[]>>;
   models?: Partial<Record<RoleId, string>>;
   effectiveModels: Record<RoleId, string>;
+  efforts?: Partial<Record<RoleId, EffortLevel>>;
+  /** null = the model's default effort. */
+  effectiveEfforts?: Record<RoleId, EffortLevel | null>;
+  /** Optional roles turned off at launch. */
+  disabledRoles?: RoleId[];
+  /** Notes and images the user added (launch dialog or run page). */
+  attachments?: RunAttachment[];
   fixIterations?: number;
   pauseReason?: string;
   stateHistory: Array<{ at: string; from: RunState; to: RunState; reason?: string }>;
   artifacts: Array<{ owner: RoleId | "orchestrator"; name: string; relative: string }>;
   failureReason?: string;
+}
+
+export interface RunAttachment {
+  id: string;
+  kind: "note" | "image";
+  addedAt: string;
+  stage: RunState;
+  /** Note body, or an image's caption. */
+  text?: string;
+  file?: string;
+  originalName?: string;
+  mediaType?: string;
+}
+
+/** Notes + images being composed in the UI, before upload. */
+export interface PendingImage {
+  file: File;
+  /** Object URL for the preview thumbnail. */
+  url: string;
+  caption: string;
+}
+export interface ContextDraft {
+  note: string;
+  images: PendingImage[];
 }
 
 /** Server events carry a timestamp; persisted ones also a per-run sequence number. */
@@ -195,6 +245,8 @@ type RawRunEvent =
   | { type: "ws.hello"; runId?: string; scope?: string }
   | { type: "run.overlaps"; runId: string; overlaps: Overlap[] }
   | { type: "run.removed"; runId: string; archived: boolean }
+  | { type: "run.attachments"; runId: string; added: number }
+  | { type: "role.settings"; runId: string; role: RoleId; model: string | null; effort: EffortLevel | null }
   | { type: "run.created"; runId: string; label: string; repoPaths: string[] }
   | { type: "run.transitioned"; runId: string; from: RunState; to: RunState }
   | { type: "run.failed"; runId: string; error: string }
@@ -230,7 +282,14 @@ export interface JiraMcpTestResult {
 
 export interface ServerConfig {
   roles: RoleId[];
+  /** Roles that can't be turned off at launch. */
+  requiredRoles: RoleId[];
   models: Record<RoleId, string>;
+  /** Model ids offered in the launch dialog's dropdowns. */
+  modelOptions: string[];
+  /** Server default effort per role; null = the model's default. */
+  efforts: Record<RoleId, EffortLevel | null>;
+  effortLevels: EffortLevel[];
   maxFixIterations: number;
   maxRunCostUsd: number;
   reviewAutoRoute: boolean;

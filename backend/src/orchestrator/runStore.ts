@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config.js";
-import type { AttemptUsage, RepoTarget, RoleAttempt, RoleId, RunRecord, RunSource, RunState } from "./types.js";
+import type { AttemptUsage, EffortLevel, RepoTarget, RoleAttempt, RoleId, RunRecord, RunSource, RunState } from "./types.js";
 
 /**
  * Run records are cached in memory so every caller (routes, workflow, a
@@ -25,6 +25,9 @@ export function createRun(input: {
   source: RunSource;
   repos: RepoTarget[];
   models?: Partial<Record<RoleId, string>>;
+  efforts?: Partial<Record<RoleId, EffortLevel>>;
+  /** Optional roles turned off for this run. */
+  disabledRoles?: RoleId[];
   /** Defaults to an isolated worktree per repo. */
   workspace?: "worktree" | "in-place";
 }): RunRecord {
@@ -42,6 +45,8 @@ export function createRun(input: {
     stateHistory: [],
     pendingApproval: null,
     models: input.models,
+    efforts: input.efforts,
+    disabledRoles: input.disabledRoles && input.disabledRoles.length > 0 ? input.disabledRoles : undefined,
     fixIterations: 0,
     workspace: input.workspace ?? "worktree",
   };
@@ -65,6 +70,11 @@ export function saveRun(record: RunRecord): void {
   record.updatedAt = new Date().toISOString();
   cache.set(record.runId, record);
   writeAtomic(runFile(record.runId), JSON.stringify(record, null, 2));
+}
+
+/** False when the role was turned off for this run at launch. */
+export function roleEnabled(record: Pick<RunRecord, "disabledRoles">, role: RoleId): boolean {
+  return !record.disabledRoles?.includes(role);
 }
 
 /** Write to a temp file and rename, so a crash mid-write never leaves a truncated run.json. */
