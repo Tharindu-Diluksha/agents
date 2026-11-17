@@ -207,10 +207,13 @@ const orchestratorArtifacts = computed(() => {
 
 const stateCls = computed((): string => (detail.value ? stateChipClass(detail.value.state) : "idle"));
 
-watch(artifactsForRole, (a) => {
-  if (a.length > 0 && !a.find((x) => x.relative === activeArtifact.value)) {
-    activeArtifact.value = a[0]?.relative ?? null;
-  }
+// Keep the preview on a file listed for the selected role; when that role has
+// none, clear it rather than keep showing the previous role's file.
+watch([artifactsForRole, orchestratorArtifacts], ([a, o]) => {
+  const current = activeArtifact.value;
+  if (current && a.some((x) => x.relative === current)) return;
+  if (a.length > 0) { activeArtifact.value = a[0]!.relative; return; }
+  activeArtifact.value = current && o.some((x) => x.relative === current) ? current : null;
 }, { immediate: true });
 
 async function skip() { await api.skip(props.id); await refresh(); }

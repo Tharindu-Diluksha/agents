@@ -60,7 +60,7 @@ export const config = {
     prCreator: roleModel("PR_CREATOR"),
   },
   /** Fix loops (review rejection, tester → Developer hand-back) allowed before the run pauses. 0 = unlimited. */
-  maxFixIterations: num("MAX_FIX_ITERATIONS", 3),
+  maxFixIterations: num("MAX_FIX_ITERATIONS", 5),
   /** Total USD a run may spend before it pauses. 0 = unlimited. */
   maxRunCostUsd: num("MAX_RUN_COST_USD", 0),
   /**

@@ -18,6 +18,8 @@ const err = ref<string | null>(null);
 const isBranchApproval = computed(() => props.pending.action === "approve_branch_names");
 /** The Analyst's feature-doc gate: the place to answer its open questions. */
 const isFeatureDocGate = computed(() => props.pending.action === "proceed_to_next" && props.pending.role === "analyst");
+/** The code-review gate: reject sends the work to the Developer (not back to the Reviewer). */
+const isReviewGate = computed(() => props.pending.action === "proceed_to_next" && props.pending.role === "reviewer");
 /** Gates whose reject re-runs the role with the typed text. Elsewhere the text would never be delivered. */
 const feedbackReachesRole = computed(() => props.pending.action === "proceed_to_next" || props.pending.action === "create_pr");
 /** Approving never carries the text, so don't let it be dropped silently. */
@@ -84,7 +86,7 @@ function approveLabel() {
     case "create_pr": return n > 1 ? `Approve + create ${n} PRs` : "Approve + create PR";
     case "approve_branch_names":
       return `Approve + create ${branches.value?.perRepo.length ?? 0} branch(es)`;
-    default: return "Approve";
+    default: return isReviewGate.value ? "Approve + continue to E2E" : "Approve";
   }
 }
 
@@ -92,6 +94,7 @@ function rejectLabel() {
   if (isBranchApproval.value) return "Cancel run";
   if (props.pending.action === "create_test_suite") return "Decline + skip E2E";
   if (isFeatureDocGate.value && hasFeedback.value) return "Send answers + revise";
+  if (isReviewGate.value) return "Send to Developer to fix";
   return "Reject + re-run";
 }
 
@@ -187,6 +190,14 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
           :placeholder="openQuestions > 0
             ? 'Answer the open questions (e.g. 1. … 2. …) or describe what to change. The Analyst revises feature-doc.md and asks again.'
             : 'Describe what to change. The Analyst revises feature-doc.md and asks again.'"
+        ></textarea>
+      </template>
+      <template v-else-if="isReviewGate">
+        <label class="muted" style="margin-top: 8px; display:block">Notes for the Developer</label>
+        <textarea
+          v-model="feedback"
+          :disabled="busy"
+          placeholder="Optional. Which findings to fix or ignore, and how (e.g. “Fix 1–4, ignore the NITs”). The Developer gets the full review report plus these notes; the tests and review then run again."
         ></textarea>
       </template>
       <template v-else>

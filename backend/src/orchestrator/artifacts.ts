@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { paths } from "../config.js";
 import { ROLES, type RepoTarget, type RoleId, type RunRecord } from "./types.js";
@@ -87,6 +87,34 @@ export function listArtifactsForRun(record: RunRecord): ListedArtifact[] {
     }
   }
   return out;
+}
+
+/**
+ * Roles run with their cwd in a target repo, so a role that resolves a
+ * declared `runs/<runId>/…` artifact path against its cwd writes it into the
+ * repo instead of the orchestrator's run folder. Move such strays to where
+ * the orchestrator (and the UI) looks for them. Returns the moved paths.
+ */
+export function relocateStrayArtifacts(record: RunRecord, cwd: string, declared: string[]): string[] {
+  const prefix = `runs/${record.runId}/`;
+  const moved: string[] = [];
+  for (const raw of declared) {
+    const rel = raw.split("\\").join("/").replace(/^\.\//, "");
+    if (!rel.startsWith(prefix) || rel.includes("..")) continue;
+    const target = join(paths.repoRoot, rel);
+    const stray = join(cwd, rel);
+    if (existsSync(target) || !existsSync(stray) || stray === target) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    try {
+      renameSync(stray, target);
+    } catch {
+      // Cross-device: copy, then remove.
+      copyFileSync(stray, target);
+      rmSync(stray);
+    }
+    moved.push(rel);
+  }
+  return moved;
 }
 
 /** Absolute path for an artifact under a role's folder. */

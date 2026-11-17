@@ -13,7 +13,7 @@ import { jiraToolsFor, loadJiraMcpConfig, mcpServersOption } from "../external/j
 import { postJiraComment } from "../external/jiraMcp.js";
 import { createPr } from "../external/gh.js";
 import { clearApproval, requestApproval } from "./approvals.js";
-import { artifactPath, perRepoPrDescriptionName, readArtifact, runDir, toRelative } from "./artifacts.js";
+import { artifactPath, perRepoPrDescriptionName, readArtifact, relocateStrayArtifacts, runDir, toRelative } from "./artifacts.js";
 import { Semaphore } from "./concurrency.js";
 import { runEnv } from "./ports.js";
 import { refreshOverlaps } from "./overlaps.js";
@@ -724,6 +724,9 @@ async function runRoleAsync(
       fail(record, `${spec.title}: ${attempt.errorMessage}`);
       return;
     }
+
+    const moved = relocateStrayArtifacts(record, spec.cwdFor(record), outcome.output.artifacts);
+    if (moved.length > 0) log.warn("workflow.artifacts_relocated", { runId, role, moved });
 
     attempt.output = outcome.output;
     attempt.status = outcome.output.status;
