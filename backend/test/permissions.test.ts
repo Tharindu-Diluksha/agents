@@ -174,6 +174,16 @@ describe("checkBashCommand", () => {
       expect(bashOk(role, "git push origin x")).toBe(false);
     }
   });
+
+  it("lets the Developer and Unit Tester remove/move tracked files and commit from a message file", () => {
+    for (const role of ["developer", "unitTester"] as const) {
+      expect(bashOk(role, "git rm -q src/OldTests.cs")).toBe(true);
+      expect(bashOk(role, "git mv src/A.cs src/B.cs")).toBe(true);
+      expect(bashOk(role, "git commit -F C:/orch/runs/R/unitTester/commit-msg.txt")).toBe(true);
+    }
+    expect(bashOk("integrationTester", "git rm -q src/x.ts")).toBe(false);
+    expect(bashOk("reviewer", "git rm -q src/x.ts")).toBe(false);
+  });
 });
 
 describe("stack profiles", () => {

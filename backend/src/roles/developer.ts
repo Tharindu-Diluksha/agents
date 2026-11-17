@@ -32,6 +32,7 @@ export const developer: RoleSpec = {
     BASH.gitRead,
     BASH.gitBranchRead,
     BASH.gitCommit,
+    BASH.gitRm,
     BASH.gitRestore,
     BASH.gitStash,
     /^git\s+fetch(\s|$)/,
@@ -68,7 +69,7 @@ export const developer: RoleSpec = {
       lines.push(
         "1. Confirm existing tests pass: run the repo's unit test command. If anything is red before you touch the code, emit `status: \"blocked\"` describing which tests failed. Do NOT proceed.",
         `2. Write an ADR to \`${adrPath}\` using \`templates/adr.md\`.`,
-        `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. List every file to touch, and fill in the **Test plan** section: the unit tests (per AC-id) ${unitTester ? "the Unit Tester will write first" : "you will write first (there is no Unit Tester in this run)"}${roleEnabled(record, "integrationTester") ? ", and the integration points the Integration Tester should cover" : ""}.`,
+        `3. Write an implementation plan to \`${planPath}\` using \`templates/impl-plan.md\`. List every file to touch, fill in the **Code map** (build/test commands incl. how to run one test project or test, test projects and their helpers, and the signatures involved, all with paths, so later roles don't explore the repo again), and fill in the **Test plan** section: the unit tests (per AC-id) ${unitTester ? "the Unit Tester will write first" : "you will write first (there is no Unit Tester in this run)"}${roleEnabled(record, "integrationTester") ? ", and the integration points the Integration Tester should cover" : ""}.`,
         "4. End your turn with `approvalRequest.action: \"proceed_to_next\"` so the user can approve the plan. Do NOT implement in this phase.",
         "",
         "## Required reading",
@@ -80,7 +81,7 @@ export const developer: RoleSpec = {
           ? [
               "The orchestrator has created the feature branch and the **Unit Tester has already written failing unit tests** from your plan (see the unit test report below). Your job is to make them pass.",
               "",
-              "1. Implement the plan. Run the unit tests often; the goal is a fully green suite.",
+              "1. Implement the plan. Replace every compile-only stub the Unit Tester added (its report lists them). Run the affected tests often; the goal is a fully green suite.",
               "2. Do NOT delete, skip, or weaken the Unit Tester's tests to get green. If you are convinced a test contradicts the feature doc or the approved plan, stop and emit `status: \"blocked\"` with `handoff: { \"nextRole\": \"unitTester\", \"notes\": \"<which test and why>\" }`.",
             ]
           : [
@@ -108,7 +109,7 @@ export const developer: RoleSpec = {
       "",
       "## Boundaries",
       "- You MUST NOT push to any remote, and MUST NOT switch branches. The orchestrator manages branches; the PR Creator pushes.",
-      bashBoundaryLine(record, "git status/diff/log/show/add/commit/restore/stash/fetch, ls/dir", developer),
+      bashBoundaryLine(record, "git status/diff/log/show/add/commit/rm/mv/restore/stash/fetch, ls/dir", developer),
       planning
         ? "- In this phase you may only write the ADR and the plan (this run's artifact folder). Edits to the target repo(s) are blocked until the user approves the plan."
         : "- File edits are limited to the target repo(s) and this run's artifact folder.",
