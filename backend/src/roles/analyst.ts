@@ -38,9 +38,9 @@ export const analyst: RoleSpec = {
         `1. Fetch the JIRA ticket \`${ticket}\` (${record.source.kind === "jira" ? record.source.ticketUrl : ""}) using the \`${getIssue}\` tool.${search ? ` You may use \`${search}\` to look up linked or related issues.` : ""}`,
         `2. Analyse the story carefully. Call out missing acceptance criteria, ambiguous requirements, dependencies, or risks.`,
         `3. Write the feature documentation to \`${featureDocPath}\` using the shape in \`templates/feature-doc.md\`.`,
-        `4. If (and ONLY if) you have substantive feedback the team should see on the ticket (clarifying questions, gaps, misalignments), write a proposed comment to \`${commentPath}\` and set \`approvalRequest.action\` to \`post_jira_comment\`. Otherwise set the request to \`proceed_to_next\`.`,
+        `4. Put every question that must be answered before planning under \`## Open questions\` (numbered). If any remain, also draft them as a JIRA comment in \`${commentPath}\`; the user may post it if they can't answer the questions themselves. Always end with \`approvalRequest.action: "proceed_to_next"\`.`,
         "",
-        "You do NOT have permission to post the JIRA comment yourself. The orchestrator will post it after the user approves.",
+        "You do NOT have permission to post JIRA comments. The user answers your open questions at the feature-doc gate; only if they can't, they may have the orchestrator post your draft to the ticket.",
       );
     } else {
       const m = record.source.kind === "manual" ? record.source : null;
@@ -58,10 +58,13 @@ export const analyst: RoleSpec = {
         "",
         `1. Analyse the description above. Call out missing acceptance criteria, ambiguous requirements, dependencies, or risks.`,
         `2. Write the feature documentation to \`${featureDocPath}\` using the shape in \`templates/feature-doc.md\`. Treat the description above as the authoritative source.`,
-        `3. End your turn with \`approvalRequest.action: "proceed_to_next"\`. Do NOT propose a JIRA comment — there is no ticket.`,
+        `3. Put every question that must be answered before planning under \`## Open questions\` (numbered); the user answers them at the feature-doc gate.`,
+        `4. End your turn with \`approvalRequest.action: "proceed_to_next"\`. Do NOT draft a JIRA comment — there is no ticket.`,
       );
     }
     lines.push(
+      "",
+      "**Open questions are a hard gate.** The run cannot leave the Analyst while `## Open questions` lists anything. When the orchestrator section below carries the user's answers, fold each one into the doc and remove it from the list; keep unanswered ones.",
       "",
       "**Acceptance criteria IDs.** Number every acceptance criterion in the feature doc as `AC-1`, `AC-2`, …. Every downstream role (Developer, Unit/Integration/E2E Testers, PR Creator) references these IDs, so keep them stable across re-runs.",
     );

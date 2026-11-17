@@ -15,6 +15,7 @@ import { createPr } from "../external/gh.js";
 import { clearApproval, requestApproval } from "./approvals.js";
 import { artifactPath, perRepoPrDescriptionName, readArtifact, relocateStrayArtifacts, runDir, toRelative } from "./artifacts.js";
 import { Semaphore } from "./concurrency.js";
+import { countOpenQuestions } from "./openQuestions.js";
 import { runEnv } from "./ports.js";
 import { refreshOverlaps } from "./overlaps.js";
 import { syncWithBase } from "../external/git.js";
@@ -62,6 +63,7 @@ export async function resumeAfterApproval(
   const record = mustLoad(runId);
   const pending = record.pendingApproval;
   if (!pending) throw new Error(`run ${runId} has no pending approval`);
+  if ((decision === "approve" || decision === "edit") && isFeatureDocGate(pending)) assertQuestionsAnswered(record);
 
   emit({ type: "approval.resolved", runId, role: pending.role, action: pending.action, decision });
 
@@ -139,12 +141,62 @@ export async function skipCurrent(runId: string): Promise<void> {
   const record = mustLoad(runId);
   const next = nextAfterSkip(record.state);
   if (!next) throw new Error(`cannot skip from ${record.state}`);
+  if (next === "developer_planning") assertQuestionsAnswered(record);
   clearApproval(record);
   if (next === "done") {
     goTo(record, "done", "skip");
     return;
   }
   startRole(record, next, "skip");
+}
+
+function isFeatureDocGate(pending: PendingApproval): boolean {
+  return pending.role === "analyst" && pending.action === "proceed_to_next";
+}
+
+/** Open questions left in the Analyst's feature doc (0 when there is no doc yet). */
+export function featureDocOpenQuestions(record: RunRecord): number {
+  const doc = readArtifact(artifactPath(record, "analyst", "feature-doc.md"));
+  return doc ? countOpenQuestions(doc) : 0;
+}
+
+/**
+ * The run can't leave the Analyst while its feature doc has open questions:
+ * the user answers them (the Analyst revises the doc) — posting them to JIRA
+ * is how to get answers they don't have, not a way past the gate.
+ */
+function assertQuestionsAnswered(record: RunRecord): void {
+  const open = featureDocOpenQuestions(record);
+  if (open > 0) {
+    throw new Error(
+      `the feature doc still has ${open} open question${open === 1 ? "" : "s"}. Answer ${open === 1 ? "it" : "them"} (the Analyst revises the doc)${
+        record.source.kind === "jira" ? `, or post ${open === 1 ? "it" : "them"} to the JIRA ticket and answer once the team replies` : ""
+      }.`,
+    );
+  }
+}
+
+/**
+ * Posts the Analyst's open questions to the JIRA ticket, for the ones the user
+ * can't answer. Only at the feature-doc gate of a JIRA run; the gate stays
+ * open — the questions still have to be answered before the run moves on.
+ */
+export async function postOpenQuestionsToJira(runId: string, body: string): Promise<void> {
+  const record = mustLoad(runId);
+  if (record.source.kind !== "jira") throw new Error("this run has no JIRA ticket");
+  if (!record.pendingApproval || !isFeatureDocGate(record.pendingApproval)) {
+    throw new Error("questions can only be posted while the feature doc awaits approval");
+  }
+  if (!body.trim()) throw new Error("the comment is empty");
+  const ticket = record.source.ticket;
+  await postJiraComment(ticket, body);
+  log.info("workflow.jira_comment_posted", { runId, ticket });
+  record.jiraComments = [
+    ...(record.jiraComments ?? []),
+    { postedAt: new Date().toISOString(), ticket, openQuestions: featureDocOpenQuestions(record) },
+  ];
+  saveRun(record);
+  systemMessage(record, "analyst", `Posted the open questions to ${ticket}. Answer them here once the team replies (or say they're answered on the ticket, and the Analyst reads its comments).`);
 }
 
 /** Stops the running role (if any) and pauses the run. Resume with jumpToRole. */
@@ -386,7 +438,6 @@ export function nextAfterSkip(state: RunState): RunState | null {
 }
 
 export function gateStateFor(role: RoleId, action: ApprovalAction): RunState | null {
-  if (role === "analyst" && action === "post_jira_comment") return "awaiting_jira_comment_decision";
   if (role === "analyst" && action === "proceed_to_next") return "awaiting_feature_doc_approval";
   if (role === "developer" && action === "proceed_to_next") return "awaiting_plan_approval";
   if (role === "reviewer" && action === "proceed_to_next") return "awaiting_review_decision";
@@ -630,7 +681,10 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
         }
       }
     }
-    startRole(record, "developer_planning", "JIRA comment resolved");
+    // Legacy gate (runs from before the comment moved to the feature-doc gate): the
+    // comment is optional, answering the open questions is not — go to that gate.
+    reopenGate(record, "analyst", "proceed_to_next", "JIRA comment resolved. Review the feature doc and answer its open questions.", []);
+    goTo(record, "awaiting_feature_doc_approval", "JIRA comment resolved");
   },
 
   async create_test_suite(record, decision) {
@@ -917,15 +971,21 @@ async function handleRoleOutput(record: RunRecord, role: RoleId, output: RoleOut
       fail(record, `${roleRegistry[role].title} reported awaiting_approval without an approvalRequest`);
       return;
     }
-    const gate = gateStateFor(role, output.approvalRequest.action);
+    let request = output.approvalRequest;
+    if (role === "analyst" && request.action === "post_jira_comment") {
+      // An older prompt (or a resumed session) may still ask to post a comment. The
+      // feature-doc gate handles that now: the draft is offered there, posting is optional.
+      request = { ...request, action: "proceed_to_next", payloadPaths: [] };
+    }
+    const gate = gateStateFor(role, request.action);
     if (!gate) {
-      fail(record, `${roleRegistry[role].title} requested approval action "${output.approvalRequest.action}", which it is not allowed to request`);
+      fail(record, `${roleRegistry[role].title} requested approval action "${request.action}", which it is not allowed to request`);
       return;
     }
     if (gate === "awaiting_review_decision" && config.reviewAutoRoute && autoRouteReview(record)) return;
 
-    const pending = requestApproval(record, role, output.approvalRequest);
-    goTo(record, gate, `${role} awaiting ${output.approvalRequest.action}`);
+    const pending = requestApproval(record, role, request);
+    goTo(record, gate, `${role} awaiting ${request.action}`);
     emit({
       type: "approval.requested",
       runId: record.runId,

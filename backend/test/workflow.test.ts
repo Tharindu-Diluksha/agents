@@ -492,6 +492,59 @@ describe("JIRA MCP wiring", () => {
     expect(calls[0]!.mcpServers).toEqual([]);
   });
 
+  it("holds the feature-doc gate until every open question is answered; posting them to JIRA is optional", async () => {
+    writeFileSync(cfgFile(), JSON.stringify({ serverName: "jira", server: { type: "http", url: "https://mcp.example.com/mcp" } }));
+    const runId = newRun(undefined, true);
+    const { postJiraComment } = await import("../src/external/jiraMcp.js");
+    const posted = vi.mocked(postJiraComment);
+    posted.mockClear();
+    const docDir = join(tmp, "runs", runId, "analyst");
+    let analystRuns = 0;
+    script = (role, state, args) => {
+      if (role !== "analyst") return happyScript(runId)(role, state, args);
+      analystRuns++;
+      mkdirSync(docDir, { recursive: true });
+      const questions = analystRuns === 1 ? "1. Which roles may export?\n2. CSV or XLSX?" : analystRuns === 2 ? "1. CSV or XLSX?" : "None.";
+      writeFileSync(join(docDir, "feature-doc.md"), `# Feature\n\n## Open questions\n\n${questions}\n\n## Non-goals\n\n- x\n`);
+      // An old-style request to post a comment lands on the feature-doc gate.
+      return analystRuns === 1 ? gate("post_jira_comment" as "proceed_to_next", [`runs/${runId}/analyst/proposed-jira-comment.md`]) : gate("proceed_to_next");
+    };
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    expect(loadRun(runId)!.pendingApproval).toMatchObject({ action: "proceed_to_next", payloadPaths: [] });
+
+    // Neither approving nor skipping gets past unanswered questions.
+    await expect(workflow.resumeAfterApproval(runId, "approve")).rejects.toThrow(/2 open questions/);
+    await expect(workflow.skipCurrent(runId)).rejects.toThrow(/2 open questions/);
+    expect(loadRun(runId)!.state).toBe("awaiting_feature_doc_approval");
+
+    // The user can't answer them: post to JIRA. The gate stays open.
+    await workflow.postOpenQuestionsToJira(runId, "1. Which roles may export?\n2. CSV or XLSX?");
+    expect(posted).toHaveBeenCalledWith("PROJ-7", expect.stringContaining("CSV or XLSX"));
+    const rec = loadRun(runId)!;
+    expect(rec.state).toBe("awaiting_feature_doc_approval");
+    expect(rec.pendingApproval).not.toBeNull();
+    expect(rec.jiraComments).toEqual([expect.objectContaining({ ticket: "PROJ-7", openQuestions: 2 })]);
+
+    // A partial answer leaves one question open; answering the rest lets the run move on.
+    await workflow.resumeAfterApproval(runId, "reject", undefined, "1. Admins only");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await expect(workflow.resumeAfterApproval(runId, "approve")).rejects.toThrow(/still has 1 open question\. Answer it/);
+    await workflow.resumeAfterApproval(runId, "reject", undefined, "2. CSV");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await workflow.resumeAfterApproval(runId, "approve");
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_plan_approval");
+    expect(posted).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to post questions to JIRA on a manual run", async () => {
+    const runId = newRun();
+    script = happyScript(runId);
+    await workflow.startRun(runId);
+    expect(await settle(runId, isGateOrEnd)).toBe("awaiting_feature_doc_approval");
+    await expect(workflow.postOpenQuestionsToJira(runId, "q")).rejects.toThrow(/no JIRA ticket/);
+  });
+
   it("fails a JIRA run clearly when no JIRA MCP server is configured", async () => {
     rmSync(cfgFile(), { force: true });
     const runId = newRun(undefined, true);

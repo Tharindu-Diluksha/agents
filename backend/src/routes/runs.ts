@@ -24,6 +24,7 @@ import { EFFORT_LEVELS, REQUIRED_ROLES, ROLES, type RoleId } from "../orchestrat
 import {
   abortRun,
   jumpToRole,
+  postOpenQuestionsToJira,
   removeRun,
   removeRunWorkspaces,
   resumeAfterApproval,
@@ -103,6 +104,10 @@ const ApproveBody = z.object({
   decision: z.enum(["approve", "reject", "edit", "skip"]),
   editedPayload: z.string().optional(),
   feedback: z.string().optional(),
+});
+
+const JiraCommentBody = z.object({
+  body: z.string().trim().min(1).max(30_000),
 });
 
 const RemoveWorkspacesBody = z.object({
@@ -351,6 +356,21 @@ export async function registerRunsRoutes(app: FastifyInstance): Promise<void> {
       reply.send({ ok: true });
     } catch (err) {
       reply.code(400).send({ error: "approval_failed", detail: errMsg(err) });
+    }
+  });
+
+  /** Posts the feature doc's open questions to the JIRA ticket. The feature-doc gate stays open. */
+  app.post<{ Params: { id: string } }>("/api/runs/:id/jira-comment", async (req, reply) => {
+    const parsed = JiraCommentBody.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400).send({ error: "invalid_body", detail: parsed.error.flatten() });
+      return;
+    }
+    try {
+      await postOpenQuestionsToJira(req.params.id, parsed.data.body);
+      reply.send({ ok: true });
+    } catch (err) {
+      reply.code(400).send({ error: "jira_comment_failed", detail: errMsg(err) });
     }
   });
 

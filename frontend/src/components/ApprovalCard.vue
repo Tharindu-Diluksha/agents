@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api } from "../api.js";
-import type { PendingApproval, ProposedBranches } from "../types.js";
-import { countOpenQuestions } from "../openQuestions.js";
+import type { PendingApproval, ProposedBranches, RunSource } from "../types.js";
+import { openQuestionItems } from "../openQuestions.js";
 
-const props = defineProps<{ runId: string; pending: PendingApproval }>();
-const emit = defineEmits<{ (e: "resolved"): void }>();
+const props = defineProps<{
+  runId: string;
+  pending: PendingApproval;
+  source?: RunSource;
+  jiraComments?: { postedAt: string; ticket: string; openQuestions: number }[];
+}>();
+const emit = defineEmits<{ (e: "resolved"): void; (e: "updated"): void }>();
 
 const feedback = ref("");
 const activePayload = ref<string | null>(props.pending.payloadPaths[0] ?? null);
@@ -24,29 +29,78 @@ const isReviewGate = computed(() => props.pending.action === "proceed_to_next" &
 const feedbackReachesRole = computed(() => props.pending.action === "proceed_to_next" || props.pending.action === "create_pr");
 /** Approving never carries the text, so don't let it be dropped silently. */
 const hasFeedback = computed(() => feedback.value.trim().length > 0);
-const openQuestions = ref(0);
+const openQuestionList = ref<string[]>([]);
+const openQuestions = computed(() => openQuestionList.value.length);
 /** Why Approve is disabled, or null when it isn't. */
 const approveBlockedReason = computed<string | null>(() => {
   if (feedbackReachesRole.value && hasFeedback.value) {
     return `Approve is disabled while this box has text — approving would discard it. Send it with “${rejectLabel()}”, or clear the box to approve.`;
   }
   if (isFeatureDocGate.value && openQuestions.value > 0) {
-    return `Approve is disabled while the feature doc has ${openQuestions.value} open question${openQuestions.value === 1 ? "" : "s"}. Answer them above and click “Send answers + revise”.`;
+    const n = openQuestions.value;
+    return `Approve is disabled while the feature doc has ${n} open question${n === 1 ? "" : "s"}. Answer ${n === 1 ? "it" : "them"} above and click “Send answers + revise”.${
+      jiraTicket.value ? " Can't answer? Post them to JIRA below and come back with the answers." : ""
+    }`;
   }
   return null;
 });
 const approveBlocked = computed(() => approveBlockedReason.value !== null);
 
 async function loadOpenQuestions() {
-  openQuestions.value = 0;
+  openQuestionList.value = [];
+  jiraDraft.value = null;
   if (!isFeatureDocGate.value) return;
   try {
-    openQuestions.value = countOpenQuestions(await api.getArtifact(props.runId, "analyst/feature-doc.md"));
+    openQuestionList.value = openQuestionItems(await api.getArtifact(props.runId, "analyst/feature-doc.md"));
   } catch {
     // No feature doc yet — show no count.
   }
 }
+
+// --- Posting the open questions to JIRA (optional; the gate stays open) ---
+const jiraTicket = computed(() => (props.source?.kind === "jira" ? props.source.ticket : null));
+/** Comments posted while this gate has been open. */
+const postedHere = computed(() => (props.jiraComments ?? []).filter((c) => c.postedAt >= props.pending.requestedAt));
+/** The comment being edited before posting; null = closed. */
+const jiraDraft = ref<string | null>(null);
+const jiraBusy = ref(false);
+const jiraErr = ref<string | null>(null);
+
 watch(() => props.pending.requestedAt, loadOpenQuestions, { immediate: true });
+
+function questionsAsComment(): string {
+  return [
+    "Analysing this ticket raised questions that need answers before implementation can be planned:",
+    "",
+    ...openQuestionList.value.map((q, i) => `${i + 1}. ${q}`),
+  ].join("\n");
+}
+
+async function openJiraDraft() {
+  jiraErr.value = null;
+  let draft = "";
+  try {
+    draft = (await api.getArtifact(props.runId, "analyst/proposed-jira-comment.md")).trim();
+  } catch {
+    // The Analyst didn't draft one; build it from the open questions.
+  }
+  jiraDraft.value = draft && !/^no open questions/i.test(draft) ? draft : questionsAsComment();
+}
+
+async function postToJira() {
+  if (!jiraDraft.value?.trim()) return;
+  jiraBusy.value = true;
+  jiraErr.value = null;
+  try {
+    await api.postJiraComment(props.runId, jiraDraft.value);
+    jiraDraft.value = null;
+    emit("updated");
+  } catch (e) {
+    jiraErr.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    jiraBusy.value = false;
+  }
+}
 
 async function loadActive() {
   const rel = activePayload.value;
@@ -191,6 +245,33 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
             ? 'Answer the open questions (e.g. 1. … 2. …) or describe what to change. The Analyst revises feature-doc.md and asks again.'
             : 'Describe what to change. The Analyst revises feature-doc.md and asks again.'"
         ></textarea>
+        <ol v-if="openQuestions > 0" class="questions">
+          <li v-for="(q, i) in openQuestionList" :key="i">{{ q }}</li>
+        </ol>
+        <div v-if="jiraTicket && openQuestions > 0" class="jira-post">
+          <p class="muted" style="margin: 0 0 6px">
+            Can't answer some of them? Post the questions to <strong>{{ jiraTicket }}</strong>. The run waits at this gate:
+            come back with the answers, or write “answered on the ticket” and the Analyst reads its comments.
+          </p>
+          <p v-for="c in postedHere" :key="c.postedAt" class="muted posted">
+            ✓ Posted {{ c.openQuestions }} question{{ c.openQuestions === 1 ? "" : "s" }} to {{ c.ticket }} at {{ new Date(c.postedAt).toLocaleString() }}
+          </p>
+          <button v-if="jiraDraft === null" @click="openJiraDraft" :disabled="busy || jiraBusy">
+            {{ postedHere.length ? "Post again to JIRA…" : "Post questions to JIRA…" }}
+          </button>
+          <template v-else>
+            <label class="muted" style="display:block">Comment for {{ jiraTicket }}</label>
+            <textarea v-model="jiraDraft" :disabled="jiraBusy"></textarea>
+            <div class="row" style="margin-top: 6px">
+              <button @click="jiraDraft = null" :disabled="jiraBusy">Cancel</button>
+              <div class="spacer" />
+              <button class="primary" @click="postToJira" :disabled="jiraBusy || !jiraDraft.trim()">
+                {{ jiraBusy ? "Posting…" : `Post to ${jiraTicket}` }}
+              </button>
+            </div>
+          </template>
+          <p v-if="jiraErr" class="error">{{ jiraErr }}</p>
+        </div>
       </template>
       <template v-else-if="isReviewGate">
         <label class="muted" style="margin-top: 8px; display:block">Notes for the Developer</label>
@@ -229,6 +310,10 @@ const canEditMarkdown = () => !isBranchApproval.value && props.pending.payloadPa
 .approval { border-color: var(--warn); }
 .error { color: var(--danger); }
 textarea { margin-top: 4px; }
+.questions { margin: 8px 0 0; padding-left: 20px; font-size: 13px; }
+.questions li { margin: 2px 0; white-space: pre-wrap; }
+.jira-post { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 6px; }
+.posted { font-size: 12px; margin: 0 0 6px; color: var(--ok, inherit); }
 .hint { font-size: 12px; margin: 4px 0 0; color: var(--warn); }
 .preview-pre { max-height: 40vh; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--panel2); padding: 10px; border-radius: 4px; }
 .branch-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-top: 8px; background: var(--panel2); }
