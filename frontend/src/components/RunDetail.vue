@@ -295,7 +295,16 @@ async function saveSettings() {
 }
 watch(activeRole, () => { editingSettings.value = false; });
 
-async function skip() { await api.skip(props.id); await refresh(); }
+async function skip() {
+  err.value = null;
+  try {
+    await api.skip(props.id);
+  } catch (e) {
+    // e.g. the feature doc still has open questions.
+    err.value = e instanceof Error ? e.message : String(e);
+  }
+  await refresh();
+}
 async function jump(to: RoleId) { await api.jump(props.id, to); activeRole.value = to; await refresh(); }
 async function abort() { await api.abort(props.id); await refresh(); }
 
@@ -457,7 +466,10 @@ async function removeWorktrees() {
       v-if="detail.pendingApproval"
       :run-id="detail.runId"
       :pending="detail.pendingApproval"
+      :source="detail.source"
+      :jira-comments="detail.jiraComments ?? []"
       @resolved="refresh"
+      @updated="refresh"
     />
 
     <RunContextPanel v-if="activeRole === 'analyst'" :detail="detail" @added="refresh" />

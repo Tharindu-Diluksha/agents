@@ -158,6 +158,8 @@ export interface RunSummary {
   overlaps?: Overlap[];
   /** Pull requests opened for this run, one per repo. */
   pullRequests?: { repoPath: string; url: string }[];
+  /** Open questions the orchestrator posted to the JIRA ticket. */
+  jiraComments?: { postedAt: string; ticket: string; openQuestions: number }[];
   pauseReason?: string;
   failureReason?: string;
 }

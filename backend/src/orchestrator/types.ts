@@ -21,6 +21,7 @@ export type RunState =
   | "created"
   | "analyst_running"
   | "awaiting_feature_doc_approval"
+  /** Legacy: runs from before open questions moved to the feature-doc gate. Resolving it reopens that gate. */
   | "awaiting_jira_comment_decision"
   | "developer_planning"
   | "awaiting_plan_approval"
@@ -191,6 +192,15 @@ export interface RunRecord {
   pullRequests?: PullRequestLink[];
   /** Extra notes and images (e.g. mockups not in JIRA) the user added at launch or later; shown to every role. */
   attachments?: RunAttachment[];
+  /** Comments the orchestrator posted to the JIRA ticket (open questions the user couldn't answer). */
+  jiraComments?: JiraCommentRecord[];
+}
+
+export interface JiraCommentRecord {
+  postedAt: string;
+  ticket: string;
+  /** Number of open questions in the feature doc when the comment was posted. */
+  openQuestions: number;
 }
 
 /**

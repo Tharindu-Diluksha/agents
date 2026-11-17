@@ -6,7 +6,7 @@ A generic multi-agent Claude orchestrator that takes a JIRA ticket (or a manual 
 
 | Role | Reads | Writes | Mutating actions (orchestrator-gated) |
 | ---- | ----- | ------ | ------------------------------------- |
-| Product Analyst | JIRA ticket or manual description, ai-guideline doc (optional) | `feature-doc.md` (numbered `AC-n` criteria), optionally `proposed-jira-comment.md` | Post JIRA comment |
+| Product Analyst | JIRA ticket or manual description, ai-guideline doc (optional) | `feature-doc.md` (numbered `AC-n` criteria, open questions), `proposed-jira-comment.md` when questions remain (JIRA only) | Feature doc: every open question must be answered; optionally post them to JIRA first |
 | Developer | feature doc, plan, test/review reports | `adr.md`, `impl-plan.md` (incl. test plan), source edits | — (plan requires approval; branches created by the orchestrator) |
 | Unit Tester | feature doc, plan | failing unit tests first (RED), then verifies them (GREEN); `unit-test-report.md` | — |
 | Integration Tester | feature doc, plan, unit report | integration tests, `integration-test-report.md` | — |

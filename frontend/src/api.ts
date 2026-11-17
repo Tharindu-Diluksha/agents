@@ -99,6 +99,16 @@ export const api = {
       }),
     );
   },
+  /** Posts the feature doc's open questions to the run's JIRA ticket; the gate stays open. */
+  async postJiraComment(id: string, body: string): Promise<void> {
+    await json(
+      await fetch(`/api/runs/${id}/jira-comment`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body }),
+      }),
+    );
+  },
   async skip(id: string): Promise<void> {
     await json(await fetch(`/api/runs/${id}/skip`, { method: "POST" }));
   },
