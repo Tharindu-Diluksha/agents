@@ -1,5 +1,6 @@
 import { ensureRoleDir } from "../orchestrator/artifacts.js";
 import { loadJiraMcpConfig, qualifiedTool } from "../external/jiraMcpConfig.js";
+import { projectInstructionsSection } from "../orchestrator/projectInstructions.js";
 import { aiGuidelineSection, artifactRelative, headerFor, orchestratorSection } from "./common.js";
 import type { RoleSpec } from "./types.js";
 
@@ -69,6 +70,7 @@ export const analyst: RoleSpec = {
       "**Acceptance criteria IDs.** Number every acceptance criterion in the feature doc as `AC-1`, `AC-2`, …. Every downstream role (Developer, Unit/Integration/E2E Testers, PR Creator) references these IDs, so keep them stable across re-runs.",
     );
     lines.push(aiGuidelineSection(record, "analyst"));
+    lines.push(projectInstructionsSection(record, "analyst"));
     if (record.repos.length > 1) {
       lines.push("", "This run spans multiple repos. In the feature doc, clearly state which repo gets which change; the Developer role will plan work accordingly.");
     }

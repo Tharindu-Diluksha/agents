@@ -15,6 +15,10 @@ interface RepoRow {
   path: string;
   baseBranch: string;
   aiGuidelinePath: string;
+  /** Comma-separated instruction files; blank = detect, "none" = off. */
+  instructionFiles: string;
+  /** Instruction files detection found for the current path. */
+  detectedInstructions: string[] | null;
   /** Checked stacks. Pre-filled from detection; empty = let the server detect. */
   stacks: StackId[];
   /** What auto-detection found for the current path, with the folder of each stack. */
@@ -22,7 +26,7 @@ interface RepoRow {
   detectError: string | null;
 }
 
-const newRow = (): RepoRow => ({ path: "", baseBranch: "master", aiGuidelinePath: "", stacks: [], detected: null, detectError: null });
+const newRow = (): RepoRow => ({ path: "", baseBranch: "master", aiGuidelinePath: "", instructionFiles: "", detectedInstructions: null, stacks: [], detected: null, detectError: null });
 
 const lastDetected = new WeakMap<RepoRow, string>();
 async function detect(r: RepoRow) {
@@ -30,10 +34,13 @@ async function detect(r: RepoRow) {
   if (lastDetected.get(r) === path) return; // blur without a change keeps the user's ticks
   lastDetected.set(r, path);
   r.detected = null;
+  r.detectedInstructions = null;
   r.detectError = null;
   if (!path) return;
   try {
-    r.detected = (await api.detectStacks(path)).projects;
+    const found = await api.detectStacks(path);
+    r.detected = found.projects;
+    r.detectedInstructions = found.instructionFiles;
     r.stacks = [...new Set(r.detected.map((p) => p.stack))];
   } catch {
     r.detectError = "path not found";
@@ -121,6 +128,21 @@ function removeCriterion(idx: number) {
   manualCriteria.value.splice(idx, 1);
 }
 
+/** Blank = let the server detect; "none" = give the agents no instruction files. */
+function parseInstructionFiles(text: string): string[] | undefined {
+  const t = text.trim();
+  if (!t) return undefined;
+  if (/^none$/i.test(t)) return [];
+  return t.split(",").map((f) => f.trim()).filter(Boolean);
+}
+
+function instructionsPlaceholder(r: RepoRow): string {
+  if (r.detectedInstructions === null) return "blank = detect CLAUDE.md / AGENTS.md · none = off";
+  return r.detectedInstructions.length
+    ? `found: ${r.detectedInstructions.join(", ")} (blank = use these · none = off)`
+    : "none found (blank = none · or list paths)";
+}
+
 async function submit() {
   error.value = null;
   submitting.value = true;
@@ -130,6 +152,7 @@ async function submit() {
         path: r.path.trim(),
         baseBranch: r.baseBranch.trim() || undefined,
         aiGuidelinePath: r.aiGuidelinePath.trim() === "" ? undefined : r.aiGuidelinePath.trim(),
+        instructionFiles: parseInstructionFiles(r.instructionFiles),
         // Ticked stacks override detection (the server keeps the folders it detects for them); none = detect.
         stacks: r.stacks.length > 0 ? r.stacks : undefined,
       }))
@@ -306,6 +329,10 @@ async function submit() {
               <input v-model="r.aiGuidelinePath" placeholder="docs/ai-guideline (blank = AI_GUIDELINE_PATH_DEFAULT if present)" />
             </div>
           </div>
+          <label title="Given to the Analyst, Developer, Unit/Integration Testers and Reviewer. The repo's .claude/settings.json is never loaded.">
+            Project instructions for agents (optional, comma-separated, relative to repo)
+          </label>
+          <input v-model="r.instructionFiles" :placeholder="instructionsPlaceholder(r)" />
           <label>Stacks <span style="font-weight: normal">(tick every one the repo uses — a monorepo can have several)</span></label>
           <div class="stack-grid">
             <label v-for="s in serverConfig?.stacks ?? []" :key="s.id" class="stack-opt" :class="{ on: r.stacks.includes(s.id) }" :title="s.summary">

@@ -1,3 +1,4 @@
+import { projectInstructionsSection } from "../orchestrator/projectInstructions.js";
 import {  aiGuidelineSection,
   artifactRelative,
   BASH,
@@ -86,6 +87,7 @@ export const unitTester: RoleSpec = {
       "- You MUST NOT push.",
       stackSection(record, "unitTester"),
       aiGuidelineSection(record, "unitTester"),
+      projectInstructionsSection(record, "unitTester"),
       orchestratorSection(ctx),
       red
         ? endOfTurnExample("red phase done", { status: "done", artifacts: [reportPath], approvalRequest: null, handoff: null })

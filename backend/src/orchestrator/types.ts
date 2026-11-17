@@ -111,6 +111,13 @@ export interface RepoTarget {
   /** Optional path (relative to `path`) to a project AI guideline document. */
   aiGuidelinePath: string | null;
   /**
+   * Repo-relative instruction files for AI agents (CLAUDE.md, AGENTS.md) inlined
+   * into the prompts of the roles in `PROJECT_INSTRUCTION_ROLES`. Recorded at
+   * launch (detected, or chosen in the dialog); [] = none. Absent (older runs) =
+   * `DEFAULT_INSTRUCTION_FILES`, whichever exist.
+   */
+  instructionFiles?: string[];
+  /**
    * The run's own git worktree for this repo, once created. Roles work here,
    * never in `path` (the user's checkout). Null/absent before the Developer's
    * first session, or after the worktree was removed.

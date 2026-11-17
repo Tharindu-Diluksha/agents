@@ -1,5 +1,6 @@
 import type { RunRecord } from "../orchestrator/types.js";
 import { roleEnabled } from "../orchestrator/runStore.js";
+import { projectInstructionsSection } from "../orchestrator/projectInstructions.js";
 import {  aiGuidelineSection,
   ROLE_TITLES,
   artifactRelative,
@@ -114,6 +115,7 @@ export const developer: RoleSpec = {
         : "- File edits are limited to the target repo(s) and this run's artifact folder.",
       stackSection(record, "developer"),
       aiGuidelineSection(record, "developer"),
+      projectInstructionsSection(record, "developer"),
       orchestratorSection(ctx),
     );
 
