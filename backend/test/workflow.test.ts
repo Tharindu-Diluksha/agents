@@ -219,6 +219,9 @@ describe("workflow state machine", () => {
     ]);
     // The PR payload from the approval reached `gh pr create`.
     expect(createPr).toHaveBeenCalledTimes(1);
+    // The link is kept on the run for the run page.
+    const { loadRun } = await import("../src/orchestrator/runStore.js");
+    expect(loadRun(runId)!.pullRequests).toEqual([{ repoPath, url: "https://github.com/acme/app/pull/1" }]);
     expect(createPr.mock.calls[0]![0]).toMatchObject({ body: "# Add widget\n\nbody", baseBranch: "main" });
 
     // Phase-specific prompts and per-role models.

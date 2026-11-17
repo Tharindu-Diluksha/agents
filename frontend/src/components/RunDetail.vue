@@ -341,6 +341,13 @@ async function removeWorktrees() {
         </div>
         <div v-if="detail.workspace === 'in-place'" style="font-size: 11px">Branch mode: the agents work directly in your checkout; the feature branch is created there after the branch gate.</div>
       </div>
+      <div v-if="detail.pullRequests?.length" class="pr-note">
+        <strong>Pull request{{ detail.pullRequests.length > 1 ? "s" : "" }}</strong>
+        <div v-for="pr in detail.pullRequests" :key="pr.repoPath" style="margin-top: 4px">
+          <a :href="pr.url" target="_blank" rel="noreferrer">{{ pr.url }} ↗</a>
+          <span v-if="detail.pullRequests.length > 1" class="muted mono" style="font-size: 12px"> · {{ pr.repoPath }}</span>
+        </div>
+      </div>
       <div v-if="detail.state === 'failed' && detail.failureReason" class="error" style="margin-top: 8px; white-space: pre-wrap">Failure: {{ detail.failureReason }}</div>
       <div v-if="detail.ports" class="muted mono" style="font-size: 11px; margin-top: 2px">
         ports: {{ detail.ports.base }}–{{ detail.ports.base + detail.ports.count - 1 }}
@@ -484,6 +491,7 @@ async function removeWorktrees() {
 @media (max-width: 1100px) { .main { grid-template-columns: minmax(0, 1fr); } }
 .stream-panel h3, .art-panel h3 { margin: 0 0 8px; }
 .moved-on { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--panel2); font-size: 13px; }
+.pr-note { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--success); border-radius: 6px; background: var(--panel2); }
 .moved-on.waiting { border-color: var(--warn); }
 .sent-feedback { border-color: var(--accent); }
 .sent-feedback textarea { margin-top: 8px; width: 100%; min-height: 120px; resize: vertical; opacity: 0.85; cursor: not-allowed; }

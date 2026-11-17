@@ -138,6 +138,8 @@ export interface RunSummary {
   totalCostUsd: number;
   totalUsage: AttemptUsage;
   overlaps?: Overlap[];
+  /** Pull requests opened for this run, one per repo. */
+  pullRequests?: { repoPath: string; url: string }[];
   pauseReason?: string;
   failureReason?: string;
 }

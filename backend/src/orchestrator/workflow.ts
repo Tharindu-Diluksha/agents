@@ -594,6 +594,17 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
       }
     }
 
+    // Keep the links (also when another repo's PR failed) so the run page can show them.
+    const created = results.flatMap((r) => (r.url ? [{ repoPath: r.repoPath, url: r.url }] : []));
+    if (created.length > 0) {
+      record.pullRequests = [
+        ...(record.pullRequests ?? []).filter((p) => !created.some((c) => c.repoPath === p.repoPath)),
+        ...created,
+      ];
+      saveRun(record);
+      systemMessage(record, "prCreator", `Pull request${created.length > 1 ? "s" : ""} created:\n${created.map((c) => `${c.repoPath}: ${c.url}`).join("\n")}`);
+    }
+
     if (results.some((r) => r.error)) {
       fail(record, results.map((r) => (r.error ? `${r.repoPath}: FAILED (${r.error})` : `${r.repoPath}: ${r.url}`)).join("\n"));
       return;
