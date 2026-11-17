@@ -171,6 +171,13 @@ export interface RunRecord {
   ports?: PortBlock | null;
   /** Last computed file overlaps with other active runs. */
   overlaps?: Overlap[];
+  /** Pull requests the orchestrator opened for this run, one per repo. */
+  pullRequests?: PullRequestLink[];
+}
+
+export interface PullRequestLink {
+  repoPath: string;
+  url: string;
 }
 
 /** Files changed by this run that another active run on the same repo also changes. */

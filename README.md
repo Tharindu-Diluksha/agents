@@ -69,7 +69,7 @@ The launch dialog's JIRA tab shows the configured server and has a **Test connec
 ## Guard rails
 
 - **Tool permissions**: each role only gets its listed tools. Bash, Write and Edit are always checked by the orchestrator (a `PreToolUse` hook plus `canUseTool`): Bash commands must match the role's allowlist and may not chain (`;`, `&&`, pipes, redirects, `$(…)`), except for a leading `cd <repo or a folder inside it> && `. File writes are limited to the target repos (or only the run folder, for Analyst / Reviewer / PR Creator), never inside `.git`.
-- **Fix-loop cap**: `MAX_FIX_ITERATIONS` (default 3).
+- **Fix-loop cap**: `MAX_FIX_ITERATIONS` (default 5).
 - **Cost budget**: `MAX_RUN_COST_USD` (default 0 = off) pauses the run before the next role once spent.
 - **Review auto-routing** (opt-in): `REVIEW_AUTO_ROUTE=true` routes the review gate from `review-findings.json`.
 - **Pause / abort**: Abort stops the running SDK session and pauses the run; "Jump → role" resumes from any role.

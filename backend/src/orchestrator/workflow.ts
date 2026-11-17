@@ -13,7 +13,7 @@ import { jiraToolsFor, loadJiraMcpConfig, mcpServersOption } from "../external/j
 import { postJiraComment } from "../external/jiraMcp.js";
 import { createPr } from "../external/gh.js";
 import { clearApproval, requestApproval } from "./approvals.js";
-import { artifactPath, perRepoPrDescriptionName, readArtifact, runDir, toRelative } from "./artifacts.js";
+import { artifactPath, perRepoPrDescriptionName, readArtifact, relocateStrayArtifacts, runDir, toRelative } from "./artifacts.js";
 import { Semaphore } from "./concurrency.js";
 import { runEnv } from "./ports.js";
 import { refreshOverlaps } from "./overlaps.js";
@@ -594,6 +594,17 @@ const approvalResolvers: Record<ApprovalAction, (record: RunRecord, decision: De
       }
     }
 
+    // Keep the links (also when another repo's PR failed) so the run page can show them.
+    const created = results.flatMap((r) => (r.url ? [{ repoPath: r.repoPath, url: r.url }] : []));
+    if (created.length > 0) {
+      record.pullRequests = [
+        ...(record.pullRequests ?? []).filter((p) => !created.some((c) => c.repoPath === p.repoPath)),
+        ...created,
+      ];
+      saveRun(record);
+      systemMessage(record, "prCreator", `Pull request${created.length > 1 ? "s" : ""} created:\n${created.map((c) => `${c.repoPath}: ${c.url}`).join("\n")}`);
+    }
+
     if (results.some((r) => r.error)) {
       fail(record, results.map((r) => (r.error ? `${r.repoPath}: FAILED (${r.error})` : `${r.repoPath}: ${r.url}`)).join("\n"));
       return;
@@ -724,6 +735,9 @@ async function runRoleAsync(
       fail(record, `${spec.title}: ${attempt.errorMessage}`);
       return;
     }
+
+    const moved = relocateStrayArtifacts(record, spec.cwdFor(record), outcome.output.artifacts);
+    if (moved.length > 0) log.warn("workflow.artifacts_relocated", { runId, role, moved });
 
     attempt.output = outcome.output;
     attempt.status = outcome.output.status;

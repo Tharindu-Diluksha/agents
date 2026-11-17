@@ -84,6 +84,11 @@ function onToggle(g: Group, e: Event) {
           <template v-else-if="e.kind === 'state'">
             <div class="state muted">{{ e.text }}</div>
           </template>
+          <template v-else-if="e.kind === 'transition'">
+            <div class="transition" :class="{ gate: e.gate }">
+              <span class="arrow">→</span> {{ e.text }}
+            </div>
+          </template>
         </div>
       </div>
     </details>
@@ -112,4 +117,7 @@ function onToggle(g: Group, e: Event) {
 .tool-result pre { margin: 0; background: var(--panel2); padding: 6px 10px; border-radius: 4px; flex: 1 1 auto; min-width: 0; max-width: 100%; max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .tool-result.error pre { border-left: 3px solid var(--danger); }
 .state { padding: 4px 0; font-size: 12px; }
+.transition { align-self: flex-start; font-size: 12px; padding: 3px 10px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); }
+.transition.gate { border-color: var(--warn); color: var(--warn); }
+.transition .arrow { font-weight: bold; }
 </style>

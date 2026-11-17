@@ -124,7 +124,7 @@ The orchestrator supports an optional per-repo AI guideline document. In code an
 
 - Model per role: `config.models` (`CLAUDE_MODEL`, overridden by `CLAUDE_MODEL_<ROLE>`), overridden per run by `RunRecord.models` from the launch dialog. Each attempt records the model it used.
 - Each attempt records `costUsd`, `numTurns` and token usage (input, output, cache read, cache write) from the SDK `result` message; `totalCostUsd(record)` / `usageTotals(record, role?)` sum them. While a role runs, `runRole.ts` emits `role.usage` events with running totals built from each assistant message's API usage (deduplicated by API message id); the final event (`final: true`) carries the `result` numbers. The UI shows a per-role usage table (`frontend/src/components/UsagePanel.vue`).
-- `MAX_FIX_ITERATIONS` (default 3) caps fix loops; `MAX_RUN_COST_USD` (default off) pauses before the next role once spent. Both pause the run (`state: "paused"`, `pauseReason`). "Jump → role" resumes, resets the fix counter and ignores the budget for that one role.
+- `MAX_FIX_ITERATIONS` (default 5) caps fix loops; `MAX_RUN_COST_USD` (default off) pauses before the next role once spent. Both pause the run (`state: "paused"`, `pauseReason`). "Jump → role" resumes, resets the fix counter and ignores the budget for that one role.
 - `REVIEW_AUTO_ROUTE=true` decides the review gate from `review-findings.json`.
 - A role that reports `blocked` without a hand-off pauses the run (fix the cause, then Jump); errors and invalid output fail it.
 

@@ -11,6 +11,7 @@ import type { RoleInputCtx, RoleSpec } from "./types.js";
 import { projectsOf, STACKS, stackBashPatterns, stacksOf, type Capability, type StackId, type StackProject } from "../stacks.js";
 import { workDir } from "../orchestrator/workspaces.js";
 import { portsPromptLines } from "../orchestrator/ports.js";
+import { paths } from "../config.js";
 
 export function artifactPath(record: RunRecord, role: ArtifactOwner, name: string): string {
   return perRoleArtifactPath(record, role, name);
@@ -39,6 +40,11 @@ export function headerFor(record: RunRecord, roleHuman: string): string {
       "Each path above is **this run's own git worktree** of the repo. Work only there — other runs may be using the original checkout or their own worktrees in parallel.",
     );
   }
+  const root = paths.repoRoot.split("\\").join("/");
+  lines.push(
+    "",
+    `**Paths.** Every \`runs/…\` and \`templates/…\` path in this prompt is relative to the orchestrator root \`${root}\`, **not** to your working directory. Read and write them by absolute path, e.g. \`${root}/runs/${record.runId}/…\` — never create a \`runs/\` folder inside a target repo.`,
+  );
   lines.push(...portsPromptLines(record));
   if (record.repos.length > 1) {
     lines.push("");
