@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import { emit } from "../events.js";
 import { log } from "../log.js";
 import { getSessionId, saveSessionId } from "../orchestrator/sessionStore.js";
-import { ROLES, type AttemptUsage, type RoleId, type RoleOutput } from "../orchestrator/types.js";
+import { ROLES, type AttemptUsage, type EffortLevel, type RoleId, type RoleOutput } from "../orchestrator/types.js";
 import type { RoleSpec } from "../roles/types.js";
 import { evaluateToolUse, GATED_TOOLS, type GuardContext, type GuardDecision } from "./permissions.js";
 
@@ -66,6 +66,8 @@ export interface RunRoleAgentArgs {
   userPrompt: string;
   cwd: string;
   model: string;
+  /** Reasoning effort for the session; omitted = the model's default. */
+  effort?: EffortLevel;
   /** Absolute paths of all repos in the run. Bash commands can be prefixed with `cd <any-of-these> && ` and still pass the allowlist. */
   repoPaths: string[];
   /** Absolute directories file-writing tools may write into. */
@@ -168,12 +170,13 @@ export async function runRoleAgent(args: RunRoleAgentArgs): Promise<RunRoleAgent
     maxTurns: spec.maxTurns ?? 40,
     settingSources: [],
   };
+  if (args.effort) options.effort = args.effort;
   if (args.maxBudgetUsd !== undefined) options.maxBudgetUsd = args.maxBudgetUsd;
   if (args.mcpServers && Object.keys(args.mcpServers).length > 0) options.mcpServers = args.mcpServers;
   if (args.env && Object.keys(args.env).length > 0) options.env = { ...process.env, ...args.env };
   if (existingSessionId) options.resume = existingSessionId;
 
-  log.info("sdk.run_role", { runId, role, model: args.model, resume: Boolean(existingSessionId), cwd });
+  log.info("sdk.run_role", { runId, role, model: args.model, effort: args.effort, resume: Boolean(existingSessionId), cwd });
 
   let capturedSessionId: string | undefined = existingSessionId ?? undefined;
   const assistantText: string[] = [];

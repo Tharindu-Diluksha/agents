@@ -14,6 +14,8 @@ import {
   stateChipClass,
   totalTokens,
   type AttemptUsage,
+  type EffortLevel,
+  type ServerConfig,
   type RoleId,
   type RunDetail,
   type RunEvent,
@@ -22,6 +24,8 @@ import UsagePanel from "./UsagePanel.vue";
 import RoleStream from "./RoleStream.vue";
 import ArtifactPreview from "./ArtifactPreview.vue";
 import ApprovalCard from "./ApprovalCard.vue";
+import ModelEffortPicker from "./ModelEffortPicker.vue";
+import RunContextPanel from "./RunContextPanel.vue";
 
 const props = defineProps<{ id: string }>();
 
@@ -122,7 +126,9 @@ function applyLive(ev: RunEvent) {
     ev.type === "approval.requested" ||
     ev.type === "approval.resolved" ||
     ev.type === "run.failed" ||
-    ev.type === "run.overlaps"
+    ev.type === "run.overlaps" ||
+    ev.type === "role.settings" ||
+    ev.type === "run.attachments"
   ) {
     refresh();
   }
@@ -157,9 +163,15 @@ async function recheckOverlaps() {
   }
 }
 
+/** Turned off for this run at launch. */
+function isDisabled(role: RoleId): boolean {
+  return detail.value?.disabledRoles?.includes(role) ?? false;
+}
+
 function roleChip(role: RoleId): { label: string; cls: string } {
   const attempts = detail.value?.roles?.[role] ?? [];
   const last = attempts[attempts.length - 1];
+  if (!last && isDisabled(role)) return { label: "off", cls: "idle" };
   if (!last) return { label: "idle", cls: "idle" };
   if (last.status === "running") return { label: "running", cls: "running" };
   if (last.status === "queued") return { label: "queued", cls: "awaiting" };
@@ -251,6 +263,37 @@ watch([artifactsForRole, orchestratorArtifacts], ([a, o]) => {
   if (a.length > 0) { activeArtifact.value = a[0]!.relative; return; }
   activeArtifact.value = current && o.some((x) => x.relative === current) ? current : null;
 }, { immediate: true });
+
+// Per-agent model / effort for the next attempt (only while that agent isn't running or queued).
+const serverConfig = ref<ServerConfig | null>(null);
+onMounted(async () => {
+  try { serverConfig.value = await api.getConfig(); } catch { /* defaults only label the selects */ }
+});
+const editingSettings = ref(false);
+const draftModel = ref("");
+const draftEffort = ref<EffortLevel | "">("");
+const settingsErr = ref<string | null>(null);
+function isBusy(role: RoleId): boolean {
+  const s = detail.value?.roles?.[role]?.at(-1)?.status;
+  return s === "running" || s === "queued";
+}
+function openSettings() {
+  draftModel.value = detail.value?.models?.[activeRole.value] ?? "";
+  draftEffort.value = detail.value?.efforts?.[activeRole.value] ?? "";
+  settingsErr.value = null;
+  editingSettings.value = true;
+}
+async function saveSettings() {
+  settingsErr.value = null;
+  try {
+    await api.setRoleSettings(props.id, activeRole.value, { model: draftModel.value.trim() || null, effort: draftEffort.value || null });
+    editingSettings.value = false;
+    await refresh();
+  } catch (e) {
+    settingsErr.value = e instanceof Error ? e.message : String(e);
+  }
+}
+watch(activeRole, () => { editingSettings.value = false; });
 
 async function skip() { await api.skip(props.id); await refresh(); }
 async function jump(to: RoleId) { await api.jump(props.id, to); activeRole.value = to; await refresh(); }
@@ -372,7 +415,9 @@ async function removeWorktrees() {
         Paused: {{ detail.pauseReason }}
       </div>
       <div class="row" style="margin-top: 12px; gap: 6px; flex-wrap: wrap">
-        <button v-for="r in ROLES" :key="r" @click="jump(r)">Jump → {{ ROLE_LABELS[r] }}</button>
+        <template v-for="r in ROLES" :key="r">
+          <button v-if="!isDisabled(r)" @click="jump(r)">Jump → {{ ROLE_LABELS[r] }}</button>
+        </template>
         <div class="spacer" />
         <button v-if="hasWorktrees" @click="removeWorktrees" :disabled="!canRemoveWorktrees" title="Available when the run is done, failed or paused. Branches are kept.">Remove worktrees</button>
         <button class="warn" @click="skip" :disabled="!detail.pendingApproval">Skip gate</button>
@@ -396,6 +441,8 @@ async function removeWorktrees() {
         :key="r"
         class="role-tab"
         :class="{ active: activeRole === r }"
+        :style="isDisabled(r) ? 'opacity: 0.5' : undefined"
+        :title="isDisabled(r) ? 'Turned off for this run' : undefined"
         @click="activeRole = r"
       >
         <span>{{ ROLE_LABELS[r] }}</span>
@@ -412,6 +459,8 @@ async function removeWorktrees() {
       :pending="detail.pendingApproval"
       @resolved="refresh"
     />
+
+    <RunContextPanel v-if="activeRole === 'analyst'" :detail="detail" @added="refresh" />
 
     <div v-else-if="sentFeedback" class="panel sent-feedback">
       <div class="row">
@@ -431,8 +480,25 @@ async function removeWorktrees() {
         <p v-if="historyNote" class="muted" style="font-size: 11px; margin: 0 0 4px">{{ historyNote }}</p>
         <h3>
           {{ ROLE_LABELS[activeRole] }} — stream
-          <span class="muted mono" style="font-size: 11px; font-weight: normal">model: {{ detail.effectiveModels[activeRole] }}</span>
+          <span class="muted mono" style="font-size: 11px; font-weight: normal">model: {{ detail.effectiveModels[activeRole] }}<template v-if="detail.effectiveEfforts?.[activeRole]"> · effort: {{ detail.effectiveEfforts[activeRole] }}</template></span>
+          <button
+            v-if="!isDisabled(activeRole) && !editingSettings"
+            style="font-size: 11px; margin-left: 8px"
+            :disabled="isBusy(activeRole)"
+            :title="isBusy(activeRole) ? 'Available once this agent has stopped' : 'Change the model / effort for the next run of this agent'"
+            @click="openSettings"
+          >Change</button>
         </h3>
+        <div v-if="editingSettings" class="settings-edit">
+          <ModelEffortPicker v-model:model="draftModel" v-model:effort="draftEffort" :role="activeRole" :config="serverConfig" />
+          <div class="row" style="gap: 6px; margin-top: 6px">
+            <span class="muted" style="font-size: 11px">Applies from this agent's next run (re-run, fix loop or Jump).</span>
+            <div class="spacer" />
+            <button @click="editingSettings = false">Cancel</button>
+            <button class="primary" :disabled="isBusy(activeRole)" @click="saveSettings">Save</button>
+          </div>
+          <div v-if="settingsErr" class="error" style="font-size: 12px">{{ settingsErr }}</div>
+        </div>
         <div v-if="movedOn" class="moved-on" :class="{ waiting: movedOn.waiting }">
           <span>
             <strong>{{ movedOn.waiting ? "Waiting:" : "Now running:" }}</strong>
@@ -479,6 +545,7 @@ async function removeWorktrees() {
 </template>
 
 <style scoped>
+.settings-edit { border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--panel2); margin-bottom: 8px; }
 .layout { display: flex; flex-direction: column; gap: 16px; }
 .header h2 { font-size: 16px; }
 .roles { display: flex; gap: 6px; flex-wrap: wrap; }

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api } from "../api.js";
-import { ROLE_LABELS, ROLES, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType, type StackId, type StackProject } from "../types.js";
+import ModelEffortPicker from "./ModelEffortPicker.vue";
+import ContextEditor from "./ContextEditor.vue";
+import { emptyDraft, hasContent, toContextUpload } from "../composables/contextDraft.js";
+import { REQUIRED_ROLES, ROLE_HINTS, ROLE_LABELS, ROLES, type ContextDraft, type EffortLevel, type JiraMcpTestResult, type RoleId, type ServerConfig, type SourceType, type StackId, type StackProject } from "../types.js";
 
 const emit = defineEmits<{
   (e: "launched", runId: string): void;
@@ -62,15 +65,23 @@ const manualDescription = ref("");
 const manualCriteria = ref<string[]>([""]);
 
 const repos = ref<RepoRow[]>([newRow()]);
+/** Extra notes / images (mockups) sent with the launch. */
+const context = ref<ContextDraft>(emptyDraft());
 /** worktree = isolated copy per run; in-place = a new branch in the user's own checkout. */
 const workspace = ref<"worktree" | "in-place">("worktree");
 const submitting = ref(false);
 const error = ref<string | null>(null);
 
-// Per-role model overrides. Blank = server default (CLAUDE_MODEL / CLAUDE_MODEL_<ROLE>).
 const serverConfig = ref<ServerConfig | null>(null);
-const showModels = ref(false);
-const models = ref<Record<RoleId, string>>(Object.fromEntries(ROLES.map((r) => [r, ""])) as Record<RoleId, string>);
+
+// Agents: which roles run, and the model / effort per role ("" = server default; see ModelEffortPicker).
+const perRole = <T,>(v: T) => Object.fromEntries(ROLES.map((r) => [r, v])) as Record<RoleId, T>;
+const enabled = ref(perRole(true));
+const models = ref(perRole(""));
+const efforts = ref(perRole<EffortLevel | "">(""));
+const requiredRoles = computed<readonly RoleId[]>(() => serverConfig.value?.requiredRoles ?? REQUIRED_ROLES);
+const isRequired = (r: RoleId) => requiredRoles.value.includes(r);
+const pipeline = computed(() => ROLES.filter((r) => enabled.value[r]).map((r) => ROLE_LABELS[r]).join(" → "));
 const jiraTest = ref<JiraMcpTestResult | null>(null);
 const jiraTesting = ref(false);
 async function testJira() {
@@ -152,13 +163,26 @@ async function submit() {
       return;
     }
 
-    const modelOverrides = Object.fromEntries(
-      Object.entries(models.value)
-        .map(([role, m]) => [role, m.trim()])
-        .filter(([, m]) => m.length > 0),
-    ) as Partial<Record<RoleId, string>>;
+    const modelOverrides: Partial<Record<RoleId, string>> = {};
+    const effortOverrides: Partial<Record<RoleId, EffortLevel>> = {};
+    for (const r of ROLES) {
+      if (!enabled.value[r]) continue;
+      const model = models.value[r].trim();
+      if (model) modelOverrides[r] = model;
+      const effort = efforts.value[r];
+      if (effort) effortOverrides[r] = effort;
+    }
+    const disabledRoles = ROLES.filter((r) => !enabled.value[r] && !isRequired(r));
 
-    const { runId } = await api.launchRun({ source, repos: payloadRepos, models: modelOverrides, workspace: workspace.value });
+    const { runId } = await api.launchRun({
+      source,
+      repos: payloadRepos,
+      models: modelOverrides,
+      efforts: effortOverrides,
+      disabledRoles,
+      context: hasContent(context.value) ? await toContextUpload(context.value) : undefined,
+      workspace: workspace.value,
+    });
     emit("launched", runId);
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
@@ -172,7 +196,7 @@ async function submit() {
   <div class="backdrop" @click.self="emit('close')">
     <div class="dialog panel">
       <h3>Launch a new run</h3>
-      <p class="muted">Analyst runs immediately. Pipeline: Analyst → Developer (plan) → Unit Tester (failing tests) → Developer (implement) → Unit Tester (verify) → Integration Tester → Reviewer → E2E Tester → PR Creator. The orchestrator asks in the UI before every mutating action.</p>
+      <p class="muted">Analyst runs immediately. Pipeline: {{ pipeline }} (choose the agents below). The orchestrator asks in the UI before every mutating action.</p>
 
       <div class="tabs">
         <button :class="{ primary: mode === 'jira' }" @click="mode = 'jira'">From JIRA ticket</button>
@@ -250,6 +274,14 @@ async function submit() {
         <button @click="addCriterion" style="margin-top: 6px">+ Add criterion</button>
       </template>
 
+      <div class="context-box">
+        <label style="margin:0">Extra context and mockups <span style="font-weight: normal">(optional)</span></label>
+        <div class="muted" style="font-size: 11px; margin: 2px 0 6px">
+          Notes and images that aren't in the {{ mode === "jira" ? "ticket" : "description" }}, e.g. UI mockups. Every agent gets them; you can add more later from the run page.
+        </div>
+        <ContextEditor v-model="context" />
+      </div>
+
       <div class="repos">
         <div class="row">
           <label style="margin:0">Target repos</label>
@@ -312,19 +344,22 @@ async function submit() {
       </div>
 
       <div class="models">
-        <div class="row">
-          <label style="margin:0">Models per role</label>
-          <div class="spacer" />
-          <button @click="showModels = !showModels">{{ showModels ? "Hide" : "Customize" }}</button>
+        <label style="margin:0">Agents, models and effort</label>
+        <div class="muted" style="font-size: 11px; margin-top: 2px">
+          Untick an agent to leave it out of this run. {{ requiredRoles.map((r) => ROLE_LABELS[r]).join(", ") }} always run.
+          Higher effort means deeper reasoning but more tokens and time; a level the model doesn't support may be lowered automatically.
         </div>
-        <p v-if="!showModels" class="muted" style="font-size: 12px; margin: 4px 0 0">
-          Using server defaults<template v-if="serverConfig">
-            (e.g. Developer: <span class="mono">{{ serverConfig.models.developer }}</span>)</template>.
-        </p>
-        <div v-else class="model-grid">
+        <div class="model-grid">
           <template v-for="r in ROLES" :key="r">
-            <span class="muted" style="font-size: 12px">{{ ROLE_LABELS[r] }}</span>
-            <input v-model="models[r]" :placeholder="serverConfig?.models[r] ?? 'server default'" class="mono" />
+            <label class="agent-opt" :class="{ off: !enabled[r] }" :title="ROLE_HINTS[r]">
+              <input type="checkbox" v-model="enabled[r]" :disabled="isRequired(r)" />
+              <span>
+                {{ ROLE_LABELS[r] }}
+                <span v-if="isRequired(r)" class="chip req">required</span>
+                <span class="muted agent-hint">{{ ROLE_HINTS[r] }}</span>
+              </span>
+            </label>
+            <ModelEffortPicker v-model:model="models[r]" v-model:effort="efforts[r]" :role="r" :config="serverConfig" :disabled="!enabled[r]" />
           </template>
         </div>
       </div>
@@ -349,6 +384,7 @@ h3 { margin: 0 0 4px; }
 label { font-size: 12px; color: var(--muted); margin-top: 8px; display: block; }
 .error { color: var(--danger); }
 .tabs { display: flex; gap: 6px; margin: 6px 0 2px; }
+.context-box { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
 .repos { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .repo-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
 .split { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
@@ -368,6 +404,12 @@ label { font-size: 12px; color: var(--muted); margin-top: 8px; display: block; }
 .ws-opt input { width: auto; margin-top: 3px; }
 .ws-hint { display: block; font-size: 11px; margin-top: 2px; }
 .models { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--panel2); }
-.model-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: center; margin-top: 8px; }
+.model-grid { display: grid; grid-template-columns: 1fr minmax(260px, 360px); gap: 8px 12px; align-items: center; margin-top: 8px; }
+.agent-opt { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 13px; color: var(--text); cursor: pointer; }
+.agent-opt input { width: auto; margin-top: 3px; }
+.agent-opt.off { opacity: 0.55; }
+.agent-hint { display: block; font-size: 11px; }
+.chip.req { font-size: 10px; margin-left: 4px; }
+@media (max-width: 640px) { .model-grid { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .split { grid-template-columns: 1fr; } }
 </style>

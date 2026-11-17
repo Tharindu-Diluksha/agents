@@ -1,4 +1,10 @@
-import type { Analytics, JiraMcpTestResult, Overlap, RoleId, StackId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots, StackProject } from "./types.js";
+import type { Analytics, EffortLevel, JiraMcpTestResult, Overlap, RoleId, StackId, RunDetail, RunEvent, RunSource, RunSummary, ServerConfig, Slots, StackProject } from "./types.js";
+
+/** Upload shape for notes + images (base64), see ContextEditor's `toContextUpload`. */
+export interface ContextUpload {
+  note?: string;
+  images?: Array<{ name: string; mediaType: string; data: string; caption?: string }>;
+}
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -67,6 +73,9 @@ export const api = {
     source: RunSource;
     repos: Array<{ path: string; baseBranch?: string; aiGuidelinePath?: string; stacks?: StackId[] }>;
     models?: Partial<Record<RoleId, string>>;
+    efforts?: Partial<Record<RoleId, EffortLevel>>;
+    disabledRoles?: RoleId[];
+    context?: ContextUpload;
     workspace?: "worktree" | "in-place";
   }): Promise<{ runId: string }> {
     return json(
@@ -92,6 +101,29 @@ export const api = {
   },
   async skip(id: string): Promise<void> {
     await json(await fetch(`/api/runs/${id}/skip`, { method: "POST" }));
+  },
+  /** Adds notes / images to a run; roles see them from their next attempt. */
+  async addAttachments(id: string, context: ContextUpload): Promise<void> {
+    await json(
+      await fetch(`/api/runs/${id}/attachments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(context),
+      }),
+    );
+  },
+  attachmentUrl(id: string, file: string): string {
+    return `/api/runs/${encodeURIComponent(id)}/attachments/${encodeURIComponent(file)}`;
+  },
+  /** Model / effort for a role's next attempt; null = server default. */
+  async setRoleSettings(id: string, role: RoleId, settings: { model: string | null; effort: EffortLevel | null }): Promise<void> {
+    await json(
+      await fetch(`/api/runs/${id}/roles/${role}/settings`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(settings),
+      }),
+    );
   },
   async jump(id: string, to: RoleId): Promise<void> {
     await json(

@@ -6,12 +6,24 @@ import {
   readArtifact,
   type ArtifactOwner,
 } from "../orchestrator/artifacts.js";
+import { attachmentsPromptSection } from "../orchestrator/attachments.js";
 import type { RepoTarget, RoleId, RunRecord } from "../orchestrator/types.js";
 import type { RoleInputCtx, RoleSpec } from "./types.js";
 import { projectsOf, STACKS, stackBashPatterns, stacksOf, type Capability, type StackId, type StackProject } from "../stacks.js";
 import { workDir } from "../orchestrator/workspaces.js";
 import { portsPromptLines } from "../orchestrator/ports.js";
 import { paths } from "../config.js";
+
+/** Human role names for prompts (roles/index.ts imports this module, so it can't be used here). */
+export const ROLE_TITLES: Record<RoleId, string> = {
+  analyst: "Analyst",
+  developer: "Developer",
+  unitTester: "Unit Tester",
+  integrationTester: "Integration Tester",
+  reviewer: "Code Reviewer",
+  e2eTester: "E2E Tester",
+  prCreator: "PR Creator",
+};
 
 export function artifactPath(record: RunRecord, role: ArtifactOwner, name: string): string {
   return perRoleArtifactPath(record, role, name);
@@ -46,12 +58,20 @@ export function headerFor(record: RunRecord, roleHuman: string): string {
     `**Paths.** Every \`runs/…\` and \`templates/…\` path in this prompt is relative to the orchestrator root \`${root}\`, **not** to your working directory. Read and write them by absolute path, e.g. \`${root}/runs/${record.runId}/…\` — never create a \`runs/\` folder inside a target repo.`,
   );
   lines.push(...portsPromptLines(record));
+  if (record.disabledRoles && record.disabledRoles.length > 0) {
+    lines.push(
+      "",
+      `**Roles turned off for this run:** ${record.disabledRoles.map((r) => ROLE_TITLES[r]).join(", ")}. The orchestrator skips them: don't wait for their reports and don't hand work to them. Where your instructions mention one of them, follow the instructions in this prompt instead.`,
+    );
+  }
   if (record.repos.length > 1) {
     lines.push("");
     lines.push(
       "**Multi-repo run.** When editing files, use absolute paths. When running shell commands, prefix with `cd <absolutePath> && ` to target a specific repo — the orchestrator's Bash allowlist is scoped to the repos listed above.",
     );
   }
+  const context = attachmentsPromptSection(record);
+  if (context) lines.push(context);
   lines.push("");
   return lines.join("\n");
 }

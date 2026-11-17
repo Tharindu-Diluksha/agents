@@ -10,6 +10,13 @@ export const ROLES = [
 ] as const;
 export type RoleId = (typeof ROLES)[number];
 
+/** Reasoning effort levels the Agent SDK accepts (`effort` option). */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/** Roles every run must include; the others can be turned off at launch. */
+export const REQUIRED_ROLES: readonly RoleId[] = ["analyst", "developer", "reviewer"];
+
 export type RunState =
   | "created"
   | "analyst_running"
@@ -78,6 +85,8 @@ export interface RoleAttempt {
   output?: RoleOutput;
   /** Model id the attempt ran with. */
   model?: string;
+  /** Reasoning effort the attempt ran with; absent = the model's default. */
+  effort?: EffortLevel;
   /** Cost and usage reported by the SDK's `result` message. */
   costUsd?: number;
   numTurns?: number;
@@ -157,6 +166,13 @@ export interface RunRecord {
   pauseReason?: string;
   /** Per-run model overrides; roles not listed use `config.models`. */
   models?: Partial<Record<RoleId, string>>;
+  /** Per-run reasoning-effort overrides; roles not listed use `config.efforts` (or the model's default). */
+  efforts?: Partial<Record<RoleId, EffortLevel>>;
+  /**
+   * Optional roles turned off at launch (never one of `REQUIRED_ROLES`). The
+   * state machine skips their states; absent = every role runs.
+   */
+  disabledRoles?: RoleId[];
   /** Number of fix loops (review rejection or a tester handing back to the Developer) so far. */
   fixIterations?: number;
   /**
@@ -173,6 +189,27 @@ export interface RunRecord {
   overlaps?: Overlap[];
   /** Pull requests the orchestrator opened for this run, one per repo. */
   pullRequests?: PullRequestLink[];
+  /** Extra notes and images (e.g. mockups not in JIRA) the user added at launch or later; shown to every role. */
+  attachments?: RunAttachment[];
+}
+
+/**
+ * User-supplied context. A note's text lives here; an image's bytes live in
+ * runs/<runId>/attachments/<file>.
+ */
+export interface RunAttachment {
+  id: string;
+  kind: "note" | "image";
+  addedAt: string;
+  /** Run state when it was added ("created" = launch dialog). */
+  stage: RunState;
+  /** Note body (kind = note) or optional caption (kind = image). */
+  text?: string;
+  /** Image file name inside the run's attachments folder. */
+  file?: string;
+  /** The image's original file name, for display. */
+  originalName?: string;
+  mediaType?: string;
 }
 
 export interface PullRequestLink {
